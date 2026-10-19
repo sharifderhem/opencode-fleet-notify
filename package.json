@@ -1,0 +1,32 @@
+{
+  "name": "opencode-fleet-notify",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that polls a fleet-notification server and shows its notices as TUI toasts",
+  "type": "module",
+  "main": "src/index.ts",
+  "files": [
+    "src",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "mock-server": "node scripts/mock-server.mjs"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sharifderhem/opencode-fleet-notify"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.19.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
