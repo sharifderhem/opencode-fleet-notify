@@ -45,10 +45,12 @@ type State = {
   ackedIds: string[]
   notifiedIds: string[]
   showCounts: Record<string, number>
+  /** Snapshots of unacked requires_ack items, re-toasted every poll (even on 304). */
+  ackItems: Record<string, { title: string; body: string; severity: string }>
 }
 
 function emptyState(): State {
-  return { lastEtag: null, ackedIds: [], notifiedIds: [], showCounts: {} }
+  return { lastEtag: null, ackedIds: [], notifiedIds: [], showCounts: {}, ackItems: {} }
 }
 
 async function loadState(): Promise<State> {
@@ -63,6 +65,14 @@ async function loadState(): Promise<State> {
         parsed.showCounts && typeof parsed.showCounts === "object"
           ? Object.fromEntries(
               Object.entries(parsed.showCounts).filter(([, v]) => typeof v === "number"),
+            )
+          : {},
+      ackItems:
+        parsed.ackItems && typeof parsed.ackItems === "object"
+          ? Object.fromEntries(
+              Object.entries(parsed.ackItems).filter(
+                ([, v]) => v && typeof v === "object" && typeof (v as { title?: unknown }).title === "string",
+              ),
             )
           : {},
     }
@@ -194,6 +204,7 @@ export const FleetNotify: Plugin = async ({ client }) => {
       // idempotent: treat 2xx and 404 as acked
       if (res.ok || res.status === 404) {
         if (!state.ackedIds.includes(id)) state.ackedIds.push(id)
+        delete state.ackItems[id]
         await saveState(state)
         return true
       }
@@ -232,10 +243,13 @@ export const FleetNotify: Plugin = async ({ client }) => {
 
       state.showCounts[id] = (state.showCounts[id] ?? 0) + 1
       if (!state.notifiedIds.includes(id)) state.notifiedIds.push(id)
-
-      if (item.requires_ack === true && state.showCounts[id] >= AUTO_ACK_AFTER_SHOWS) {
-        const ok = await ackItem(id)
-        await log("debug", ok ? `auto-acked ${id} after ${AUTO_ACK_AFTER_SHOWS} shows` : `auto-ack failed for ${id}`)
+      if (item.requires_ack === true) {
+        state.ackItems[id] = {
+          title,
+          body: body + link,
+          severity: typeof item.severity === "string" ? item.severity : "critical",
+        }
+        await maybeAutoAck(id)
       }
       void now
     }
@@ -244,6 +258,30 @@ export const FleetNotify: Plugin = async ({ client }) => {
       await toast("Fleet notices", `+${overflow} more notice${overflow === 1 ? "" : "s"}`, "info", INFO_DURATION_MS)
     }
 
+    await saveState(state)
+  }
+
+  /** Auto-ack once an ack-required item has been shown enough times. */
+  const maybeAutoAck = async (id: string) => {
+    if ((state.showCounts[id] ?? 0) >= AUTO_ACK_AFTER_SHOWS) {
+      const ok = await ackItem(id)
+      await log("debug", ok ? `auto-acked ${id} after ${AUTO_ACK_AFTER_SHOWS} shows` : `auto-ack failed for ${id}`)
+    }
+  }
+
+  /** Re-toast unacked ack-required items — runs even when the feed is
+   * unchanged (304), which is exactly when nagging matters most. */
+  const reNag = async () => {
+    for (const [id, item] of Object.entries(state.ackItems)) {
+      if (state.ackedIds.includes(id)) {
+        delete state.ackItems[id]
+        continue
+      }
+      const { variant, duration } = toastParams({ severity: item.severity })
+      await toast(item.title, item.body, variant, duration)
+      state.showCounts[id] = (state.showCounts[id] ?? 0) + 1
+      await maybeAutoAck(id)
+    }
     await saveState(state)
   }
 
@@ -260,6 +298,7 @@ export const FleetNotify: Plugin = async ({ client }) => {
 
       if (res.status === 304) {
         failures = 0
+        await reNag()
       } else if (res.ok) {
         failures = 0
         const envelope = (await res.json()) as FeedEnvelope
