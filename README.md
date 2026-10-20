@@ -54,12 +54,15 @@ If no key is found, the plugin disables itself silently (one `debug` line in the
 
 ## Behavior
 
-- Polls `GET {url}/feed` once when a session is created (full feed), then every ~90 seconds
-  with ±20% jitter, with `?types=notification` on interval polls.
-- Renders each new notification as a TUI toast:
-  - `info` → `info` variant, ~5 s
-  - `warning` → `warning` variant, ~30 s
-  - `critical` → `error` variant, ~60 s
+- Polls `GET {url}/feed` once at plugin load (OpenCode start) and on session creation
+  (full feed), then every ~90 seconds with ±20% jitter, `?types=notification` on
+  interval polls.
+- Renders each new notification two ways:
+  - a TUI toast (`info` ~5 s, `warning` ~30 s, `critical` ~60 s), and
+  - a **no-reply message injected into the current session** (first show only) —
+    toasts don't render on every surface (the desktop app has no TUI), while
+    session messages are visible identically in the terminal, desktop app, and
+    VS Code extension.
 - Items with `requires_ack: true` are re-toasted on every poll until acknowledged. Since a
   server-side plugin cannot register custom slash commands, acknowledgement is automatic:
   after an item has been shown 3 times, the plugin POSTs the ack itself. An LLM-callable

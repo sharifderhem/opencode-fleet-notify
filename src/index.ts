@@ -5,7 +5,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 // keep in sync with package.json
-const VERSION = "0.2.2"
+const VERSION = "0.3.0"
 const SERVICE = "fleet-notify"
 const POLL_INTERVAL_MS = 90_000
 const POLL_JITTER = 0.2
@@ -266,6 +266,30 @@ export const FleetNotify: Plugin = async ({ client }) => {
   let failures = 0
   let timer: ReturnType<typeof setTimeout> | null = null
   let stopped = false
+  let currentSessionId: string | null = null
+
+  /** Insert a no-reply message into the active session (or the most recent
+   * one) so notices are visible on surfaces without toast rendering. */
+  const injectToSession = async (text: string) => {
+    try {
+      let sid = currentSessionId
+      if (!sid) {
+        const sessions = (await client.session.list()) as unknown
+        const list = Array.isArray(sessions)
+          ? sessions
+          : (sessions as { data?: unknown[] })?.data
+        const first = Array.isArray(list) ? (list[0] as { id?: string }) : null
+        if (first?.id) sid = first.id
+      }
+      if (!sid) return
+      await client.session.prompt({
+        path: { id: sid },
+        body: { noReply: true, parts: [{ type: "text", text }] },
+      } as never)
+    } catch (err) {
+      await log("debug", "session inject failed", { error: String(err) })
+    }
+  }
 
   const toast = async (title: string | undefined, message: string, variant: "info" | "warning" | "error", duration: number) => {
     try {
@@ -300,7 +324,6 @@ export const FleetNotify: Plugin = async ({ client }) => {
   }
 
   const handleItems = async (items: FeedItem[]) => {
-    const now = Date.now()
     const fresh = items.filter((item) => {
       if (item.type !== "notification") return false // forward-compat: ignore unknown types
       if (typeof item.id !== "string" || item.id.length === 0) return false
@@ -326,6 +349,13 @@ export const FleetNotify: Plugin = async ({ client }) => {
       const { variant, duration } = toastParams(item)
       await toast(title, body + link, variant, duration)
 
+      // Toasts don't render on every surface (the desktop app has no TUI), so
+      // first-time items are also injected into the current session as a
+      // no-reply message — visible identically in terminal, desktop, VS Code.
+      if (!state.notifiedIds.includes(id)) {
+        await injectToSession(`[fleet notice · ${variant}] ${title}\n${body}${link}`)
+      }
+
       state.showCounts[id] = (state.showCounts[id] ?? 0) + 1
       if (!state.notifiedIds.includes(id)) state.notifiedIds.push(id)
       if (item.requires_ack === true) {
@@ -336,7 +366,6 @@ export const FleetNotify: Plugin = async ({ client }) => {
         }
         await maybeAutoAck(id)
       }
-      void now
     }
 
     if (overflow > 0) {
@@ -440,6 +469,9 @@ export const FleetNotify: Plugin = async ({ client }) => {
   return {
     event: async ({ event }) => {
       try {
+        const props = (event as { properties?: { info?: { id?: string }; sessionID?: string } }).properties
+        const sid = props?.info?.id ?? props?.sessionID
+        if (sid) currentSessionId = sid
         if (event.type === "session.created") {
           await guardedPoll(true)
         }
