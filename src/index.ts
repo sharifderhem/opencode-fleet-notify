@@ -5,7 +5,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 // keep in sync with package.json
-const VERSION = "0.2.1"
+const VERSION = "0.2.2"
 const SERVICE = "fleet-notify"
 const POLL_INTERVAL_MS = 90_000
 const POLL_JITTER = 0.2
@@ -183,9 +183,14 @@ async function resolveFleetUrl(): Promise<{ url: string; source: string } | null
   }
 
   const project = await providerFromConfig(join(process.cwd(), "opencode.json"))
-  const global = await providerFromConfig(GLOBAL_CONFIG)
-  const origin = originOf(project.baseURL) ?? originOf(global.baseURL)
-  if (origin) {
+  const globalCfg = await providerFromConfig(GLOBAL_CONFIG)
+  // Try every candidate origin until one answers — a provider may point at a
+  // raw gateway that doesn't host the discovery document (e.g. a project
+  // config with a direct IP while the global config has the real origin).
+  const origins = [originOf(project.baseURL), originOf(globalCfg.baseURL)].filter(
+    (o, i, all): o is string => o !== null && all.indexOf(o) === i,
+  )
+  for (const origin of origins) {
     try {
       const res = await fetch(`${origin}/.well-known/fleet-notify`, {
         signal: AbortSignal.timeout(5000),
@@ -197,7 +202,7 @@ async function resolveFleetUrl(): Promise<{ url: string; source: string } | null
         }
       }
     } catch {
-      // discovery failed — fall through
+      // this origin doesn't host discovery — try the next
     }
   }
   return null
@@ -405,7 +410,7 @@ export const FleetNotify: Plugin = async ({ client }) => {
   const schedule = () => {
     if (stopped) return
     timer = setTimeout(async () => {
-      await poll(false)
+      await guardedPoll(false)
       schedule()
     }, nextDelay(failures))
     if (typeof timer === "object" && timer && "unref" in timer) {
@@ -416,15 +421,27 @@ export const FleetNotify: Plugin = async ({ client }) => {
   await log("info", `fleet-notify ${VERSION} active, polling ${base}`)
 
   // Poll once at plugin load (OpenCode start) — session.created does not fire
-  // when a previous session is resumed, which is the common case.
-  void poll(true)
+  // when a previous session is resumed, which is the common case. The mutex
+  // keeps the load poll and a simultaneous session.created poll from
+  // double-showing the same items.
+  let polling = false
+  const guardedPoll = async (initial: boolean) => {
+    if (polling) return
+    polling = true
+    try {
+      await poll(initial)
+    } finally {
+      polling = false
+    }
+  }
+  void guardedPoll(true)
   schedule()
 
   return {
     event: async ({ event }) => {
       try {
         if (event.type === "session.created") {
-          await poll(true)
+          await guardedPoll(true)
         }
       } catch {
         // never throw from hooks
