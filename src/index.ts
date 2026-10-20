@@ -5,7 +5,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 // keep in sync with package.json
-const VERSION = "0.1.1"
+const VERSION = "0.2.0"
 const SERVICE = "fleet-notify"
 const POLL_INTERVAL_MS = 90_000
 const POLL_JITTER = 0.2
@@ -91,25 +91,44 @@ async function saveState(state: State): Promise<void> {
 }
 
 const GLOBAL_CONFIG = join(homedir(), ".opencode", "opencode.json")
+const CONFIG_FILE = join(homedir(), ".config", "opencode", "fleet-notify.json")
 
-/** First apiKey found in a config's provider entries (provider.*.options.apiKey
- * or provider.*.apiKey). Returns null when the file is missing/unreadable. */
-async function providerKeyFromConfig(path: string): Promise<string | null> {
+/** First provider entry's apiKey and baseURL from a config file
+ * (provider.*.options.apiKey/baseURL or provider.*.apiKey/baseURL).
+ * Returns {} when the file is missing/unreadable. */
+async function providerFromConfig(path: string): Promise<{ apiKey?: string; baseURL?: string }> {
   try {
     const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>
     const providers = parsed.provider
-    if (!providers || typeof providers !== "object") return null
+    if (!providers || typeof providers !== "object") return {}
     for (const entry of Object.values(providers as Record<string, unknown>)) {
       if (!entry || typeof entry !== "object") continue
       const e = entry as Record<string, unknown>
       const options = e.options as Record<string, unknown> | undefined
-      const candidate = options?.apiKey ?? e.apiKey
-      if (typeof candidate === "string" && candidate.length > 0) return candidate
+      const apiKey = options?.apiKey ?? e.apiKey
+      const baseURL = options?.baseURL ?? e.baseURL
+      if (typeof apiKey === "string" && apiKey.length > 0) {
+        return {
+          apiKey,
+          baseURL: typeof baseURL === "string" && baseURL.length > 0 ? baseURL : undefined,
+        }
+      }
     }
   } catch {
     // missing or unreadable config — not an error
   }
-  return null
+  return {}
+}
+
+/** The gateway origin a provider baseURL points at (e.g.
+ * "https://gateway.example.com/api" → "https://gateway.example.com"). */
+function originOf(baseURL: string | undefined): string | null {
+  if (!baseURL) return null
+  try {
+    return new URL(baseURL).origin
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -134,12 +153,53 @@ async function resolveApiKey(): Promise<string | null> {
   } catch {
     // no auth file or unreadable — fall through
   }
-  const projectKey = await providerKeyFromConfig(join(process.cwd(), "opencode.json"))
-  if (projectKey) return projectKey
-  const globalKey = await providerKeyFromConfig(GLOBAL_CONFIG)
-  if (globalKey) return globalKey
+  const projectKey = await providerFromConfig(join(process.cwd(), "opencode.json"))
+  if (projectKey.apiKey) return projectKey.apiKey
+  const globalKey = await providerFromConfig(GLOBAL_CONFIG)
+  if (globalKey.apiKey) return globalKey.apiKey
   const env = process.env.FLEET_NOTIFY_API_KEY
   if (typeof env === "string" && env.length > 0) return env
+  return null
+}
+
+/**
+ * Resolve the fleet server URL.
+ * Precedence: (1) FLEET_NOTIFY_URL env var,
+ * (2) ~/.config/opencode/fleet-notify.json {"url": ...},
+ * (3) auto-discovery: {origin of the provider baseURL}/.well-known/fleet-notify
+ *     → {"feed_url": ...}. Returns { url, source } or null.
+ */
+async function resolveFleetUrl(): Promise<{ url: string; source: string } | null> {
+  const envUrl = process.env.FLEET_NOTIFY_URL
+  if (typeof envUrl === "string" && envUrl.length > 0) return { url: envUrl, source: "env" }
+
+  try {
+    const parsed = JSON.parse(await readFile(CONFIG_FILE, "utf8")) as Record<string, unknown>
+    if (typeof parsed.url === "string" && parsed.url.length > 0) {
+      return { url: parsed.url, source: "file" }
+    }
+  } catch {
+    // no plugin config file — try discovery
+  }
+
+  const project = await providerFromConfig(join(process.cwd(), "opencode.json"))
+  const global = await providerFromConfig(GLOBAL_CONFIG)
+  const origin = originOf(project.baseURL) ?? originOf(global.baseURL)
+  if (origin) {
+    try {
+      const res = await fetch(`${origin}/.well-known/fleet-notify`, {
+        signal: AbortSignal.timeout(5000),
+      })
+      if (res.ok) {
+        const doc = (await res.json()) as Record<string, unknown>
+        if (typeof doc.feed_url === "string" && doc.feed_url.length > 0) {
+          return { url: doc.feed_url, source: "discovery" }
+        }
+      }
+    } catch {
+      // discovery failed — fall through
+    }
+  }
   return null
 }
 
@@ -179,23 +239,16 @@ export const FleetNotify: Plugin = async ({ client }) => {
     }
   }
 
-  const config = (await client.config.get().catch(() => null)) as
-    | { data?: Record<string, unknown> }
-    | null
-  const configUrl =
-    config?.data && typeof config.data === "object"
-      ? (config.data as Record<string, unknown>)["fleet-notify"]
-      : undefined
-  const url =
-    (configUrl && typeof configUrl === "object"
-      ? (configUrl as Record<string, unknown>).url
-      : undefined) ??
-    process.env.FLEET_NOTIFY_URL
-
-  if (typeof url !== "string" || url.length === 0) {
-    await log("debug", "disabled: no fleet-notify url configured")
+  const resolved = await resolveFleetUrl()
+  if (!resolved) {
+    await log(
+      "debug",
+      `disabled: no fleet server found (set FLEET_NOTIFY_URL, create ${CONFIG_FILE}, or serve /.well-known/fleet-notify on the gateway origin)`,
+    )
     return {}
   }
+  const url = resolved.url
+  await log("info", `fleet-notify ${VERSION}: server from ${resolved.source}`)
   const base = url.replace(/\/+$/, "")
 
   const apiKey = await resolveApiKey()

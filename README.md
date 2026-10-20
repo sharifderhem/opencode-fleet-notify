@@ -13,20 +13,34 @@ Add the plugin to your `opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-fleet-notify"],
-  "fleet-notify": {
-    "url": "https://fleet.example.com"
-  }
+  "plugin": ["opencode-fleet-notify"]
 }
 ```
 
-Or set the environment variable instead of the config key:
+That is the entire setup when your fleet server co-locates with your gateway (see
+discovery below). No other configuration is needed.
 
-```sh
-export FLEET_NOTIFY_URL=https://fleet.example.com
-```
+### How it finds your server
 
-The URL is the entire configuration.
+OpenCode's config schema rejects unknown top-level keys, so the URL is **not** set in
+`opencode.json`. The plugin resolves it in this order — first match wins:
+
+1. **`FLEET_NOTIFY_URL` environment variable** — explicit override.
+2. **`~/.config/opencode/fleet-notify.json`** — explicit file config:
+   ```json
+   { "url": "https://fleet.example.com" }
+   ```
+3. **Auto-discovery (zero config)** — the plugin takes the origin of your provider's
+   `baseURL` (e.g. `https://gateway.example.com/api` → `https://gateway.example.com`)
+   and fetches `{origin}/.well-known/fleet-notify`, expecting:
+   ```json
+   { "feed_url": "https://fleet.example.com/api/fleet" }
+   ```
+   Fleet-server operators: serve this one JSON document and your users need nothing
+   beyond the `plugin` line.
+
+If none of these resolve, the plugin disables itself silently (one `debug` line in the
+app log naming the source it used, or why none was found).
 
 ### API key resolution
 
@@ -37,7 +51,6 @@ The plugin authenticates with a bearer key, resolved in this order:
 3. The `FLEET_NOTIFY_API_KEY` environment variable
 
 If no key is found, the plugin disables itself silently (one `debug` line in the app log).
-TODO for v0.2: also read provider `apiKey` entries from `opencode.json`.
 
 ## Behavior
 
@@ -120,16 +133,17 @@ npm run typecheck     # tsc --noEmit
 npm run mock-server   # serves a static feed on http://localhost:8787
 ```
 
-To test locally, start the mock server, then add to a test `opencode.json`:
+To test locally, start the mock server, then add the plugin to a test `opencode.json`:
 
 ```json
 {
-  "plugin": ["file:///absolute/path/to/opencode-fleet-notify"],
-  "fleet-notify": { "url": "http://localhost:8787" }
+  "plugin": ["file:///absolute/path/to/opencode-fleet-notify"]
 }
 ```
 
-and set `FLEET_NOTIFY_API_KEY=dev-key` (or have any entry in `~/.local/share/opencode/auth.json`).
+and point the plugin at the mock with `FLEET_NOTIFY_URL=http://localhost:8787`
+(env var wins over discovery and the config file, so it's the right choice for testing).
+Set `FLEET_NOTIFY_API_KEY=dev-key` (or have any entry in `~/.local/share/opencode/auth.json`).
 The mock server logs every request, honors `If-None-Match`, and logs acks. To observe ETag/304
 behavior, restart OpenCode after the first successful poll — the state file persists the ETag.
 
