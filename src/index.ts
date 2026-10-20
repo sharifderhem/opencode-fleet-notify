@@ -5,7 +5,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 // keep in sync with package.json
-const VERSION = "0.2.0"
+const VERSION = "0.2.1"
 const SERVICE = "fleet-notify"
 const POLL_INTERVAL_MS = 90_000
 const POLL_JITTER = 0.2
@@ -415,12 +415,16 @@ export const FleetNotify: Plugin = async ({ client }) => {
 
   await log("info", `fleet-notify ${VERSION} active, polling ${base}`)
 
+  // Poll once at plugin load (OpenCode start) — session.created does not fire
+  // when a previous session is resumed, which is the common case.
+  void poll(true)
+  schedule()
+
   return {
     event: async ({ event }) => {
       try {
         if (event.type === "session.created") {
           await poll(true)
-          if (!timer) schedule()
         }
       } catch {
         // never throw from hooks
