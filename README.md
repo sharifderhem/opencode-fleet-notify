@@ -157,6 +157,17 @@ Set `FLEET_NOTIFY_API_KEY=dev-key` (or have any entry in `~/.local/share/opencod
 The mock server logs every request, honors `If-None-Match`, and logs acks. To observe ETag/304
 behavior, restart OpenCode after the first successful poll — the state file persists the ETag.
 
+## Known limitations (field-tested 2026-10-20)
+
+- **Facts:** on OpenCode 2.0 terminal, notifications render as top-right toasts that
+  auto-dismiss after their duration, and session-injected messages land in the most
+  recent session. Acks and polling are fully working.
+- **Suspected, not verified:** the bundled `./tui` center-dialog module may not load
+  under OpenCode 2.0 (API-generation mismatch — 2.0 uses `Plugin.define` from
+  `@opencode/plugin/tui`; this package ships the 1.x `{ id, tui }` shape). Until fixed,
+  `requires_ack` items rely on re-toast + auto-ack after 3 shows rather than a
+  blocking modal.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
