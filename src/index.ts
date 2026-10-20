@@ -5,7 +5,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 // keep in sync with package.json
-const VERSION = "0.3.0"
+const VERSION = "0.3.1"
 const SERVICE = "fleet-notify"
 const POLL_INTERVAL_MS = 90_000
 const POLL_JITTER = 0.2
@@ -164,12 +164,20 @@ async function resolveApiKey(): Promise<string | null> {
 
 /**
  * Resolve the fleet server URL.
- * Precedence: (1) FLEET_NOTIFY_URL env var,
- * (2) ~/.config/opencode/fleet-notify.json {"url": ...},
- * (3) auto-discovery: {origin of the provider baseURL}/.well-known/fleet-notify
- *     → {"feed_url": ...}. Returns { url, source } or null.
+ * Precedence: (1) plugin options from the opencode.json tuple form
+ *     ("plugin": [["opencode-fleet-notify", { "url": "..." }]]),
+ * (2) FLEET_NOTIFY_URL env var,
+ * (3) ~/.config/opencode/fleet-notify.json {"url": ...},
+ * (4) auto-discovery: every provider baseURL origin's
+ *     /.well-known/fleet-notify → {"feed_url": ...}, first answer wins.
+ * Returns { url, source } or null.
  */
-async function resolveFleetUrl(): Promise<{ url: string; source: string } | null> {
+async function resolveFleetUrl(
+  options: Record<string, unknown> | undefined,
+): Promise<{ url: string; source: string } | null> {
+  const optUrl = options?.url
+  if (typeof optUrl === "string" && optUrl.length > 0) return { url: optUrl, source: "options" }
+
   const envUrl = process.env.FLEET_NOTIFY_URL
   if (typeof envUrl === "string" && envUrl.length > 0) return { url: envUrl, source: "env" }
 
@@ -235,7 +243,7 @@ function nextDelay(failures: number): number {
   return backoff * (1 + (Math.random() * 2 - 1) * POLL_JITTER)
 }
 
-export const FleetNotify: Plugin = async ({ client }) => {
+export const FleetNotify: Plugin = async ({ client }, options) => {
   const log = async (level: "debug" | "info" | "warn" | "error", message: string, extra?: Record<string, unknown>) => {
     try {
       await client.app.log({ body: { service: SERVICE, level, message, extra } })
@@ -244,7 +252,7 @@ export const FleetNotify: Plugin = async ({ client }) => {
     }
   }
 
-  const resolved = await resolveFleetUrl()
+  const resolved = await resolveFleetUrl(options)
   if (!resolved) {
     await log(
       "debug",
