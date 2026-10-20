@@ -33,7 +33,8 @@ The URL is the entire configuration.
 The plugin authenticates with a bearer key, resolved in this order:
 
 1. The first credential found in `~/.local/share/opencode/auth.json`
-2. The `FLEET_NOTIFY_API_KEY` environment variable
+2. The first provider `apiKey` in the project `opencode.json` (then the global `~/.opencode/opencode.json`)
+3. The `FLEET_NOTIFY_API_KEY` environment variable
 
 If no key is found, the plugin disables itself silently (one `debug` line in the app log).
 TODO for v0.2: also read provider `apiKey` entries from `opencode.json`.

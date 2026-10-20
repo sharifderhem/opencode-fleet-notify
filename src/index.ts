@@ -5,7 +5,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 // keep in sync with package.json
-const VERSION = "0.1.0"
+const VERSION = "0.1.1"
 const SERVICE = "fleet-notify"
 const POLL_INTERVAL_MS = 90_000
 const POLL_JITTER = 0.2
@@ -90,10 +90,33 @@ async function saveState(state: State): Promise<void> {
   }
 }
 
+const GLOBAL_CONFIG = join(homedir(), ".opencode", "opencode.json")
+
+/** First apiKey found in a config's provider entries (provider.*.options.apiKey
+ * or provider.*.apiKey). Returns null when the file is missing/unreadable. */
+async function providerKeyFromConfig(path: string): Promise<string | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>
+    const providers = parsed.provider
+    if (!providers || typeof providers !== "object") return null
+    for (const entry of Object.values(providers as Record<string, unknown>)) {
+      if (!entry || typeof entry !== "object") continue
+      const e = entry as Record<string, unknown>
+      const options = e.options as Record<string, unknown> | undefined
+      const candidate = options?.apiKey ?? e.apiKey
+      if (typeof candidate === "string" && candidate.length > 0) return candidate
+    }
+  } catch {
+    // missing or unreadable config — not an error
+  }
+  return null
+}
+
 /**
  * Resolve the gateway API key.
- * Precedence: (1) ~/.local/share/opencode/auth.json entries, (2) FLEET_NOTIFY_API_KEY env var.
- * TODO(v0.2): also honor opencode.json provider `apiKey` / `options.apiKey` entries.
+ * Precedence: (1) ~/.local/share/opencode/auth.json entries,
+ * (2) provider apiKey in project opencode.json, (3) in global
+ * ~/.opencode/opencode.json, (4) FLEET_NOTIFY_API_KEY env var.
  */
 async function resolveApiKey(): Promise<string | null> {
   try {
@@ -109,8 +132,12 @@ async function resolveApiKey(): Promise<string | null> {
       }
     }
   } catch {
-    // no auth file or unreadable — fall through to env var
+    // no auth file or unreadable — fall through
   }
+  const projectKey = await providerKeyFromConfig(join(process.cwd(), "opencode.json"))
+  if (projectKey) return projectKey
+  const globalKey = await providerKeyFromConfig(GLOBAL_CONFIG)
+  if (globalKey) return globalKey
   const env = process.env.FLEET_NOTIFY_API_KEY
   if (typeof env === "string" && env.length > 0) return env
   return null
@@ -173,7 +200,7 @@ export const FleetNotify: Plugin = async ({ client }) => {
 
   const apiKey = await resolveApiKey()
   if (!apiKey) {
-    await log("debug", "disabled: no API key found in auth.json or FLEET_NOTIFY_API_KEY")
+    await log("debug", "disabled: no API key found in auth.json, opencode.json providers, or FLEET_NOTIFY_API_KEY")
     return {}
   }
 
