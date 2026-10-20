@@ -24,7 +24,8 @@
     "url": "https://github.com/sharifderhem/opencode-fleet-notify"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.19.3"
+    "@opencode-ai/plugin": "^1.19.3",
+    "@opencode/plugin": "^2.1.1"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.5.8",
