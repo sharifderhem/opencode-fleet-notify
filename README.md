@@ -8,14 +8,17 @@ deprecations, policy changes, incidents — without anyone having to check a das
 
 ## Install
 
-Add the plugin to your `opencode.json`:
+Add the plugin to your `opencode.json` — with the URL inline (official tuple form):
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-fleet-notify"]
+  "plugin": [["opencode-fleet-notify", { "url": "https://fleet.example.com" }]]
 }
 ```
+
+Or just `"plugin": ["opencode-fleet-notify"]` and let auto-discovery find the server
+(see below).
 
 That is the entire setup when your fleet server co-locates with your gateway (see
 discovery below). No other configuration is needed.
@@ -25,12 +28,13 @@ discovery below). No other configuration is needed.
 OpenCode's config schema rejects unknown top-level keys, so the URL is **not** set in
 `opencode.json`. The plugin resolves it in this order — first match wins:
 
-1. **`FLEET_NOTIFY_URL` environment variable** — explicit override.
-2. **`~/.config/opencode/fleet-notify.json`** — explicit file config:
+1. **Plugin options** — the tuple form shown above (`{ "url": ... }`).
+2. **`FLEET_NOTIFY_URL` environment variable** — explicit override.
+3. **`~/.config/opencode/fleet-notify.json`** — explicit file config:
    ```json
    { "url": "https://fleet.example.com" }
    ```
-3. **Auto-discovery (zero config)** — the plugin takes the origin of your provider's
+4. **Auto-discovery (zero config)** — the plugin takes the origin of your provider's
    `baseURL` (e.g. `https://gateway.example.com/api` → `https://gateway.example.com`)
    and fetches `{origin}/.well-known/fleet-notify`, expecting:
    ```json
@@ -57,10 +61,13 @@ If no key is found, the plugin disables itself silently (one `debug` line in the
 - Polls `GET {url}/feed` once at plugin load (OpenCode start) and on session creation
   (full feed), then every ~90 seconds with ±20% jitter, `?types=notification` on
   interval polls.
-- Renders each new notification two ways:
+- Renders each new notification three ways:
+  - a **center dialog in the terminal** (via the bundled `./tui` module): `alert` for
+    regular items, `confirm` for `requires_ack` items — pressing confirm queues a real
+    acknowledgement, which the server half POSTs on its next cycle.
   - a TUI toast (`info` ~5 s, `warning` ~30 s, `critical` ~60 s), and
   - a **no-reply message injected into the current session** (first show only) —
-    toasts don't render on every surface (the desktop app has no TUI), while
+    toasts/dialogs don't render on every surface (the desktop app has no TUI), while
     session messages are visible identically in the terminal, desktop app, and
     VS Code extension.
 - Items with `requires_ack: true` are re-toasted on every poll until acknowledged. Since a

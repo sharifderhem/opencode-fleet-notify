@@ -5,7 +5,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 // keep in sync with package.json
-const VERSION = "0.3.1"
+const VERSION = "0.4.0"
 const SERVICE = "fleet-notify"
 const POLL_INTERVAL_MS = 90_000
 const POLL_JITTER = 0.2
@@ -15,6 +15,8 @@ const MAX_TOASTS_PER_POLL = 5
 const AUTO_ACK_AFTER_SHOWS = 3
 const STATE_DIR = join(homedir(), ".local", "state", "opencode-fleet-notify")
 const STATE_FILE = join(STATE_DIR, "state.json")
+/** Written by the TUI module (./tui); the server plugin POSTs queued acks. */
+const BRIDGE_FILE = join(STATE_DIR, "tui-bridge.json")
 const AUTH_FILE = join(homedir(), ".local", "share", "opencode", "auth.json")
 
 const INFO_DURATION_MS = 5_000
@@ -40,6 +42,14 @@ type FeedEnvelope = {
   items?: unknown
 }
 
+type DialogItem = {
+  id: string
+  title: string
+  body: string
+  severity: string
+  requires_ack: boolean
+}
+
 type State = {
   lastEtag: string | null
   ackedIds: string[]
@@ -47,10 +57,12 @@ type State = {
   showCounts: Record<string, number>
   /** Snapshots of unacked requires_ack items, re-toasted every poll (even on 304). */
   ackItems: Record<string, { title: string; body: string; severity: string }>
+  /** First-seen items awaiting a center dialog in the TUI module (./tui). */
+  pendingDialogs: DialogItem[]
 }
 
 function emptyState(): State {
-  return { lastEtag: null, ackedIds: [], notifiedIds: [], showCounts: {}, ackItems: {} }
+  return { lastEtag: null, ackedIds: [], notifiedIds: [], showCounts: {}, ackItems: {}, pendingDialogs: [] }
 }
 
 async function loadState(): Promise<State> {
@@ -75,6 +87,12 @@ async function loadState(): Promise<State> {
               ),
             )
           : {},
+      pendingDialogs: Array.isArray(parsed.pendingDialogs)
+        ? parsed.pendingDialogs.filter(
+            (x): x is DialogItem =>
+              !!x && typeof x === "object" && typeof (x as DialogItem).id === "string",
+          )
+        : [],
     }
   } catch {
     return emptyState()
@@ -322,6 +340,7 @@ export const FleetNotify: Plugin = async ({ client }, options) => {
       if (res.ok || res.status === 404) {
         if (!state.ackedIds.includes(id)) state.ackedIds.push(id)
         delete state.ackItems[id]
+        state.pendingDialogs = state.pendingDialogs.filter((d) => d.id !== id)
         await saveState(state)
         return true
       }
@@ -357,10 +376,16 @@ export const FleetNotify: Plugin = async ({ client }, options) => {
       const { variant, duration } = toastParams(item)
       await toast(title, body + link, variant, duration)
 
-      // Toasts don't render on every surface (the desktop app has no TUI), so
-      // first-time items are also injected into the current session as a
-      // no-reply message — visible identically in terminal, desktop, VS Code.
+      // Queue for the TUI module (./tui): shows a center dialog for every
+      // first-seen item on terminals; confirm on requires_ack items acks.
       if (!state.notifiedIds.includes(id)) {
+        state.pendingDialogs.push({
+          id,
+          title,
+          body: body + link,
+          severity: typeof item.severity === "string" ? item.severity : "info",
+          requires_ack: item.requires_ack === true,
+        })
         await injectToSession(`[fleet notice · ${variant}] ${title}\n${body}${link}`)
       }
 
@@ -407,8 +432,32 @@ export const FleetNotify: Plugin = async ({ client }, options) => {
     await saveState(state)
   }
 
+  /** POST acks the TUI module queued from dialog confirms (tui-bridge.json).
+   * The bridge file is owned by the TUI side; we only drain ackQueue. */
+  const processBridgeAcks = async () => {
+    let bridge: { ackQueue?: unknown }
+    try {
+      bridge = JSON.parse(await readFile(BRIDGE_FILE, "utf8"))
+    } catch {
+      return // no bridge file — TUI module not running
+    }
+    if (!Array.isArray(bridge.ackQueue) || bridge.ackQueue.length === 0) return
+    const remaining: string[] = []
+    for (const id of bridge.ackQueue) {
+      if (typeof id !== "string") continue
+      const ok = await ackItem(id)
+      if (!ok) remaining.push(id)
+    }
+    try {
+      await writeFile(BRIDGE_FILE, JSON.stringify({ ...bridge, ackQueue: remaining }), "utf8")
+    } catch {
+      // best-effort
+    }
+  }
+
   const poll = async (initial: boolean) => {
     if (stopped) return
+    await processBridgeAcks()
     try {
       const headers: Record<string, string> = {
         Authorization: `Bearer ${apiKey}`,
