@@ -84,7 +84,7 @@ const server = createServer((req, res) => {
   res.end(JSON.stringify({ error: "not found" }))
 })
 
-server.listen(port, () => {
+server.listen(port, "127.0.0.1", () => {
   console.log(`mock fleet server listening on http://localhost:${port}`)
-  console.log(`point the plugin at it with: { "fleet-notify": { "url": "http://localhost:${port}" } }`)
+  console.log(`set FLEET_NOTIFY_URL=http://127.0.0.1:${port} and FLEET_NOTIFY_API_KEY=dev-key`)
 })

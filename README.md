@@ -1,173 +1,146 @@
 # opencode-fleet-notify
 
-An [OpenCode](https://opencode.ai) plugin that polls a "fleet protocol" notification server and
-shows its notices as toast notifications in the OpenCode TUI.
+Fleet announcements for OpenCode. Version **0.5.0** adds OpenCode 2.1.1 server and
+terminal support with explicit acknowledgments. This is a local release candidate;
+see verification below for the tested scope. The agreed scope is terminal support;
+immediate desktop/web delivery remains explicitly unresolved. No repository push
+or package publication is part of this work.
 
-Use it to broadcast operational notices to a fleet of OpenCode users — maintenance windows,
-deprecations, policy changes, incidents — without anyone having to check a dashboard.
-
-## Install
-
-Add the plugin to your `opencode.json` — with the URL inline (official tuple form):
+## OpenCode 2 installation
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [["opencode-fleet-notify", { "url": "https://fleet.example.com" }]]
+  "plugins": [{
+    "package": "opencode-fleet-notify@0.5.0",
+    "options": { "url": "https://gateway.example.com/api/fleet" }
+  }]
 }
 ```
 
-Or just `"plugin": ["opencode-fleet-notify"]` and let auto-discovery find the server
-(see below).
+The terminal entry point loads automatically alongside the server entry point.
+For a local checkout, replace the package name with its absolute directory path.
+Restart/reload OpenCode after changing the configuration.
 
-That is the entire setup when your fleet server co-locates with your gateway (see
-discovery below). No other configuration is needed.
+If the gateway serves `/.well-known/fleet-notify` with a `feed_url` on the same
+origin, the package name alone is enough. The plugin uses OpenCode's resolved
+provider configuration (including JSONC and environment/file substitutions).
 
-### How it finds your server
+Server URL precedence:
 
-OpenCode's config schema rejects unknown top-level keys, so the URL is **not** set in
-`opencode.json`. The plugin resolves it in this order — first match wins:
+1. Plugin `options.url`.
+2. `FLEET_NOTIFY_URL`.
+3. `$XDG_CONFIG_HOME/opencode/fleet-notify.json` (`~/.config` by default), with `{"url":"..."}`.
+4. Discovery from configured provider `settings.baseURL` origins.
 
-1. **Plugin options** — the tuple form shown above (`{ "url": ... }`).
-2. **`FLEET_NOTIFY_URL` environment variable** — explicit override.
-3. **`~/.config/opencode/fleet-notify.json`** — explicit file config:
-   ```json
-   { "url": "https://fleet.example.com" }
-   ```
-4. **Auto-discovery (zero config)** — the plugin takes the origin of your provider's
-   `baseURL` (e.g. `https://gateway.example.com/api` → `https://gateway.example.com`)
-   and fetches `{origin}/.well-known/fleet-notify`, expecting:
-   ```json
-   { "feed_url": "https://fleet.example.com/api/fleet" }
-   ```
-   Fleet-server operators: serve this one JSON document and your users need nothing
-   beyond the `plugin` line.
+Credentials: an explicit `FLEET_NOTIFY_API_KEY` takes precedence. Otherwise the
+plugin selects the provider matching the gateway origin, using its active key
+integration before `settings.apiKey`. It never takes an arbitrary credential from
+another provider. For a separately hosted fleet service, or ambiguous providers,
+set `options.provider` to the gateway's provider ID alongside `options.url`.
+Cross-origin discovery is ignored; explicit configuration is required.
 
-If none of these resolve, the plugin disables itself silently (one `debug` line in the
-app log naming the source it used, or why none was found).
+## Notifications and acknowledgments
 
-### API key resolution
+- Poll once at startup and on new root sessions, then roughly every 90 seconds
+  with jitter and exponential failure backoff. Discovery retries if provider
+  configuration is not ready during plugin startup.
+- Terminal: first-seen notices open a center dialog. Required notices offer
+  **Acknowledge** and **Later**. Later/Escape never records an acknowledgment;
+  required notices reappear after approximately 90 seconds.
+- Confirming sends an immediate receipt. Success is shown only after a successful
+  backend response. Failed receipts remain queued for retry across restarts.
+- **There is no auto-ack after repeated displays.** A 404 is not a receipt.
+- At most five dialogs per batch. New notices take priority over repeat reminders.
+- `/fleet-notices` opens the terminal inbox immediately, including already-seen
+  notices. Select a notice to read it and acknowledge it if required.
+- `/fleet-ack <id>` is an explicit server command for acknowledging a notice.
+- Full and notification-only feeds use separate ETags. Removed/expired notices
+  leave the active list. Unknown item types are ignored.
+- V2 state uses OpenCode plugin storage, scoped by location and a hash of the
+  server URL/key. Credentials are not stored in that state. Old V1 automatic
+  receipt state is not imported as proof of human acknowledgment.
 
-The plugin authenticates with a bearer key, resolved in this order:
+### Desktop and web limitation (verified on 2.1.1)
 
-1. The first credential found in `~/.local/share/opencode/auth.json`
-2. The first provider `apiKey` in the project `opencode.json` (then the global `~/.opencode/opencode.json`)
-3. The `FLEET_NOTIFY_API_KEY` environment variable
+**Immediate desktop/web notification rendering is unresolved.** Terminal plugins
+cannot supply desktop dialogs. The actual host's `session.synthetic` with
+`resume: false` puts input into a pending inbox; an idle web session shows neither
+that input nor a notification. It does not append a visible transcript message.
 
-If no key is found, the plugin disables itself silently (one `debug` line in the app log).
+`options.sessionMessages: true` opts into queueing notices for the next normal
+session turn. It is **off by default**, does not start a model turn, and is not an
+immediate notification solution. `/fleet-notices` is a terminal UI command.
+The `/fleet-ack` command performs the receipt immediately, but its textual feedback
+uses this same queued-message API. Terminal dialog feedback is immediate.
 
-## Behavior
+## OpenCode 1 compatibility
 
-- Polls `GET {url}/feed` once at plugin load (OpenCode start) and on session creation
-  (full feed), then every ~90 seconds with ±20% jitter, `?types=notification` on
-  interval polls.
-- Renders each new notification three ways:
-  - a **center dialog in the terminal** (via the bundled `./tui` module): `alert` for
-    regular items, `confirm` for `requires_ack` items — pressing confirm queues a real
-    acknowledgement, which the server half POSTs on its next cycle.
-  - a TUI toast (`info` ~5 s, `warning` ~30 s, `critical` ~60 s), and
-  - a **no-reply message injected into the current session** (first show only) —
-    toasts/dialogs don't render on every surface (the desktop app has no TUI), while
-    session messages are visible identically in the terminal, desktop app, and
-    VS Code extension.
-- Items with `requires_ack: true` are re-toasted on every poll until acknowledged. Since a
-  server-side plugin cannot register custom slash commands, acknowledgement is automatic:
-  after an item has been shown 3 times, the plugin POSTs the ack itself. An LLM-callable
-  `fleet_ack` tool is also registered so an agent can acknowledge a notice by id.
-- At most 5 toasts per poll; any remainder is summarized as a `+N more notices` toast.
-- Expired items (`expires_at` in the past) are ignored client-side as defense in depth.
-- All failures are silent: network errors, 5xx, malformed feeds → the cycle is skipped with
-  exponential backoff (capped at 15 minutes). The plugin never throws during load or hooks.
+The package retains the official dual-generation export. V1 **1.18.29+** calls
+`server()` and the legacy `tui()` entry; V2 calls `setup()` on both entries. Use
+V1's singular `plugin` configuration and tuple options on those hosts:
 
-Local dedup state lives in `~/.local/state/opencode-fleet-notify/state.json`
-(`lastEtag`, `ackedIds`, `notifiedIds`, per-item show counts).
+```json
+{"plugin": [["opencode-fleet-notify@0.5.0", {"url":"https://gateway.example.com/api/fleet"}]]}
+```
 
-## Fleet protocol
+The retained legacy path also removes three-display auto-acknowledgment and adds
+network deadlines. It still uses its original file bridge, credential resolution,
+and `fleet_ack` tool. V1 runtime compatibility has not been re-tested with a V1
+binary in this change; the live verification below is specifically 2.1.1.
 
-### `GET {url}/feed`
+## Protocol
 
-Request headers:
-
-- `Authorization: Bearer <key>`
-- `X-Fleet-Client: opencode-fleet-notify/<version>`
-- `If-None-Match: <last etag>` (when the client has one)
-
-Query parameters: optional `?types=notification` on interval polls.
-
-Responses:
-
-- `304 Not Modified` — nothing to do.
-- `200 OK` — a feed envelope:
+`GET {url}/feed` returns `{ "version": 1, "etag": "...", "items": [...] }`.
+Interval polls use `?types=notification`; `If-None-Match` allows 304 responses.
+Requests authenticate with the gateway key in the Bearer header.
 
 ```json
 {
-  "version": 1,
-  "etag": "abc123",
-  "items": [
-    {
-      "id": "maint-2026-10-19",
-      "type": "notification",
-      "severity": "critical",
-      "title": "Planned maintenance",
-      "body": "Gateway restart at 02:00 UTC.",
-      "link": "https://fleet.example.com/notices/maint-2026-10-19",
-      "requires_ack": true,
-      "expires_at": "2026-10-20T02:00:00Z"
-    }
-  ]
+  "id": "maintenance-1",
+  "type": "notification",
+  "severity": "critical",
+  "title": "Planned maintenance",
+  "body": "Gateway restart tonight.",
+  "requires_ack": true,
+  "expires_at": "2026-12-01T00:00:00Z"
 }
 ```
 
-Item fields: `id` (string, required), `severity` (`info` | `warning` | `critical`), `title`,
-`body`, `link`, `requires_ack` (boolean), `expires_at` (ISO 8601). Unknown `type` values are
-ignored silently for forward compatibility; v0.1 handles only `notification`.
+`POST {url}/ack/{id}` sends `{ "action": "ack" }`. Any successful HTTP response
+confirms receipt; other responses retry. Acknowledgments are idempotent server-side.
+The plugin sends no code, prompts, or session contents to the fleet service.
+Skills/MCP synchronization is not implemented by this release.
 
-### `POST {url}/ack/{id}`
-
-Body: `{ "action": "ack" }`. Must be idempotent; 2xx (and 404) count as acknowledged.
-
-## Privacy
-
-The API key is sent only to the server you configured, in the `Authorization` header. The
-only data the plugin sends back is an ack receipt (`POST /ack/{id}`) after a `requires_ack`
-notice has been displayed 3 times (or when the `fleet_ack` tool is invoked). No code, prompts,
-or session content ever leaves your machine.
-
-## Development
-
-Requires Node 18+ (OpenCode itself runs plugins with Bun, loading TypeScript directly).
+## Development and verification
 
 ```sh
 npm install
-npm run typecheck     # tsc --noEmit
-npm run mock-server   # serves a static feed on http://localhost:8787
+npm run typecheck
+npm test
+npm run mock-server
+OPENCODE_BINARY=/absolute/path/to/opencode node scripts/verify-host.mjs
+OPENCODE_BINARY=/absolute/path/to/opencode node scripts/verify-host.mjs --discovery
 ```
 
-To test locally, start the mock server, then add the plugin to a test `opencode.json`:
+The host check uses temporary configuration/storage, localhost fixtures and a
+fake key. It checks real plugin loading, entry discovery, feed retrieval, explicit
+slash-command acknowledgment, reload persistence and zero model output tokens.
+It does not publish, contact production, or alter the user's OpenCode configuration.
+Pass an extracted package directory as its argument to check a packed artifact.
 
-```json
-{
-  "plugin": ["file:///absolute/path/to/opencode-fleet-notify"]
-}
-```
+Manual verification on **OpenCode 2.1.1**, 2026-10-21:
 
-and point the plugin at the mock with `FLEET_NOTIFY_URL=http://localhost:8787`
-(env var wins over discovery and the config file, so it's the right choice for testing).
-Set `FLEET_NOTIFY_API_KEY=dev-key` (or have any entry in `~/.local/share/opencode/auth.json`).
-The mock server logs every request, honors `If-None-Match`, and logs acks. To observe ETag/304
-behavior, restart OpenCode after the first successful poll — the state file persists the ETag.
+- Actual terminal displayed both the information dialog and the required notice's
+  **Later / Acknowledge** dialog.
+- Confirm produced an actual mock-backend receipt and an acknowledgment-success toast.
+- `/fleet-notices` and the Fleet notices palette action both opened the live
+  terminal inbox; selecting a previously seen notice displayed its full text.
+- Actual web UI stayed blank while `resume:false` notices were in the inbox;
+  desktop support is therefore not claimed.
 
-## Known limitations (field-tested 2026-10-20)
+Official references: [migration](https://opencode.ai/v2/docs/build/plugins/migrate-v1/),
+[CLI dialogs](https://opencode.ai/v2/docs/build/plugins/cli/),
+[RPC](https://opencode.ai/v2/docs/build/plugins/rpc/).
 
-- **Facts:** on OpenCode 2.0 terminal, notifications render as top-right toasts that
-  auto-dismiss after their duration, and session-injected messages land in the most
-  recent session. Acks and polling are fully working.
-- **Suspected, not verified:** the bundled `./tui` center-dialog module may not load
-  under OpenCode 2.0 (API-generation mismatch — 2.0 uses `Plugin.define` from
-  `@opencode/plugin/tui`; this package ships the 1.x `{ id, tui }` shape). Until fixed,
-  `requires_ack` items rely on re-toast + auto-ack after 3 shows rather than a
-  blocking modal.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT — see LICENSE.
