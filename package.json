@@ -1,6 +1,6 @@
 {
   "name": "opencode-fleet-notify",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Fleet notifications for OpenCode 1.x and 2.x with explicit acknowledgments",
   "type": "module",
   "main": "src/index.ts",
@@ -21,7 +21,8 @@
     "typecheck": "tsc --noEmit",
     "mock-server": "node scripts/mock-server.mjs",
     "test": "node --loader ./scripts/ts-loader.mjs test/all.mjs",
-    "test:host": "node scripts/verify-host.mjs"
+    "test:host": "node scripts/verify-host.mjs",
+    "test:features:host": "node scripts/verify-features-host.mjs"
   },
   "license": "MIT",
   "repository": {
@@ -31,6 +32,7 @@
   "dependencies": {
     "@opencode-ai/plugin": "^1.19.3",
     "@opencode/plugin": "2.1.1",
+    "fflate": "^0.8.2",
     "solid-js": "^1.9.17"
   },
   "peerDependencies": {

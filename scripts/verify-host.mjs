@@ -38,7 +38,7 @@ await writeFile(join(project, 'opencode.json'), JSON.stringify({
   plugins: [{ package: packagePath, options: discovery ? {} : { url: feedUrl } }],
   ...(discovery ? { providers: { fixture: { name: 'Fixture gateway', package: '@opencode/ai/providers/openai-compatible', settings: { baseURL: feedUrl + '/v1', apiKey: 'fixture-key' } } } } : {}),
 }))
-const env = { ...process.env, FLEET_NOTIFY_API_KEY: 'fixture-key' }
+const env = { ...process.env, HOME: fixture, FLEET_NOTIFY_API_KEY: 'fixture-key' }
 if (discovery) { delete env.FLEET_NOTIFY_API_KEY; delete env.FLEET_NOTIFY_URL }
 for (const name of ['CONFIG', 'DATA', 'STATE', 'CACHE']) env[`XDG_${name}_HOME`] = join(fixture, name.toLowerCase())
 const child = spawn(process.env.OPENCODE_BINARY ?? 'opencode', ['serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'] })

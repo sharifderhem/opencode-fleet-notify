@@ -1,10 +1,83 @@
 # opencode-fleet-notify
 
-Fleet announcements for OpenCode. Version **0.5.1** adds OpenCode 2.1.1 server and
+Fleet notifications, additive LiteLLM skill sync, and native model metadata for
+OpenCode. Version **0.6.0** adds skills and metadata support on V1 and V2.
+
+Version **0.5.1** adds OpenCode 2.1.1 server and
 terminal support with explicit acknowledgments. Version 0.5.1 fixes the published
 TUI loading failure by deferring the legacy entry and installing its Solid runtime
 dependency. The agreed scope is terminal support; immediate desktop/web delivery
 remains explicitly unresolved.
+
+## LiteLLM skills and model metadata (0.6.0)
+
+Version 0.6.0 automatically reads LiteLLM's existing
+`/claude-code/plugins` and `/model/info` endpoints using the configured provider's
+base URL and matching API key. A trailing `/v1` is removed while proxy prefixes
+such as `/api` are preserved. No dashboard endpoint or extra credential is needed.
+These additions were introduced in 0.6.0.
+
+The provider named `litellm` is selected automatically. Otherwise, the plugin uses
+an unambiguous provider matching the notification URL's origin. Set plugin option
+`provider` to select a different ID explicitly. Set `skills: false` or
+`modelMetadata: false` to disable that feature. Notification credential overrides
+do not override the LiteLLM provider's credential.
+
+### Additive skills sync
+
+- Sync the catalog visible to that key at startup, on new sessions, and every five
+  minutes. Skills live on the OpenCode server in
+  `$XDG_CONFIG_HOME/opencode/skills` (normally `~/.config/opencode/skills`).
+- Download the catalog's external sources without sending the LiteLLM key.
+  Supported sources: public HTTPS GitHub/Git repositories, Git subdirectories,
+  and direct HTTPS ZIP archives. Git sources require Git on the server; refs must
+  be branch/tag names. Private source authentication and tar archives are not
+  supported. Archive URLs must resolve directly without an HTTP redirect.
+- Install `SKILL.md` subtrees and their supporting files, not arbitrary plugin
+  hooks, commands, or MCP registrations. Files are stored as regular files;
+  bundled scripts should be invoked through their interpreter.
+- Preserve personal skill names and any locally modified managed skill, including
+  added files. Conflicts are skipped and logged. Removed catalog entries do not
+  delete local skills. The hidden `.fleet-state.json` tracks ownership and hashes.
+- A stable catalog version or archive digest avoids downloading unchanged skills.
+  Publishers must change the version when content changes. Without a version or
+  digest, the source is fetched again to compare file hashes; unchanged files are
+  not rewritten.
+- Downloads and extraction are bounded; unsafe paths and Git symlinks are refused.
+  Syncs are serialized, with recovery for locks left by exited processes.
+- V2 reloads skill discovery after writes. V1 discovers the folder normally;
+  an already-open project may need a reload to refresh cached skill listings.
+
+### Native model fields
+
+LiteLLM prices are converted from dollars per token to OpenCode's dollars per
+million tokens. Reported input/output limits and prices enrich the existing model
+metadata. V1 uses an in-memory configuration hook; V2 uses a provider transform.
+Saved OpenCode configuration is not rewritten by the plugin.
+
+Missing/null data preserves existing values. Duplicate deployment aliases are
+skipped. V2 context-tier pricing is preserved, and a model without a cost baseline
+needs all four prices (input/output/cache read/cache write) before a baseline can
+be created. V1 only writes valid complete cost/limit objects. The plugin cannot
+supply a context limit LiteLLM does not report. V1 metadata refreshes on project
+configuration reload; V2 also refreshes with the sync cycle.
+
+OpenCode's Context **Usage** remains context percentage and **Total Cost** remains
+session cost calculated by OpenCode. Pricing changes affect subsequent accounting;
+existing message costs are not retroactively rewritten. These values are not
+LiteLLM's daily invoice totals. No daily key-spend field or new UI is added.
+
+### Local verification
+
+Run `npm run typecheck` and `npm test`. Real-host fixture checks use temporary HOME
+and XDG directories, fake LiteLLM responses, and a local HTTPS archive server:
+
+```sh
+OPENCODE_BINARY=/path/to/opencode npm run test:features:host
+OPENCODE_BINARY=/path/to/opencode-v1 npm run test:features:host -- --legacy
+```
+
+The fixture requires OpenSSL. It makes no model calls and never uses a real key.
 
 ## OpenCode 2 installation
 
@@ -12,7 +85,7 @@ remains explicitly unresolved.
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [{
-    "package": "opencode-fleet-notify@0.5.1",
+    "package": "opencode-fleet-notify@0.6.0",
     "options": { "url": "https://gateway.example.com/api/fleet" }
   }]
 }
@@ -81,7 +154,7 @@ The package retains the official dual-generation export. V1 **1.18.29+** calls
 V1's singular `plugin` configuration and tuple options on those hosts:
 
 ```json
-{"plugin": [["opencode-fleet-notify@0.5.1", {"url":"https://gateway.example.com/api/fleet"}]]}
+{"plugin": [["opencode-fleet-notify@0.6.0", {"url":"https://gateway.example.com/api/fleet"}]]}
 ```
 
 The retained legacy path also removes three-display auto-acknowledgment and adds

@@ -4,10 +4,13 @@ import { FleetNotify } from "./legacy.js"
 import { resolveConfig } from "./config.js"
 import { createNotifications, message, restore } from "./notifications.js"
 import { Fleet } from "./rpc.js"
+import { startFeatures } from "./features.js"
+import { withLegacyFeatures } from "./legacy-features.js"
 
 const definition = Plugin.define({
   id: "opencode-fleet-notify",
   setup(ctx) {
+    const stopFeatures = startFeatures(ctx)
     const controller = new AbortController()
     let stop: (() => void) | undefined
     const disposers: Array<() => Promise<void>> = []
@@ -107,6 +110,7 @@ const definition = Plugin.define({
       console.warn(`[fleet-notify] setup failed: ${error instanceof Error ? error.name : "unknown error"}`)
     })
     return async () => {
+      await stopFeatures()
       controller.abort()
       stop?.()
       await ready
@@ -115,4 +119,4 @@ const definition = Plugin.define({
 })
 
 // Official compatibility shape: V1 >=1.18.29 calls server(), V2 calls setup().
-export default { ...definition, server: FleetNotify }
+export default { ...definition, server: withLegacyFeatures(FleetNotify) }
