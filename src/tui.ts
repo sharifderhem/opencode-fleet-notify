@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin/tui"
-import legacy from "./legacy-tui.js"
+import type { TuiPluginModule } from "@opencode-ai/plugin/tui"
 import { Fleet } from "./rpc.js"
 import { active, notices, type Notice } from "./notifications.js"
 
@@ -84,4 +84,10 @@ const definition = Plugin.define({
   },
 })
 
-export default { ...definition, tui: legacy.tui }
+// Load the V1 UI only when a V1 host invokes it. V2 does not use Solid.
+const tui: TuiPluginModule["tui"] = async (...args) => {
+  const { default: legacy } = await import("./legacy-tui.js")
+  return legacy.tui!(...args)
+}
+
+export default { ...definition, tui }

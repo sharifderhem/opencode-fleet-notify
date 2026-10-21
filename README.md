@@ -1,10 +1,10 @@
 # opencode-fleet-notify
 
-Fleet announcements for OpenCode. Version **0.5.0** adds OpenCode 2.1.1 server and
-terminal support with explicit acknowledgments. This is a local release candidate;
-see verification below for the tested scope. The agreed scope is terminal support;
-immediate desktop/web delivery remains explicitly unresolved. No repository push
-or package publication is part of this work.
+Fleet announcements for OpenCode. Version **0.5.1** adds OpenCode 2.1.1 server and
+terminal support with explicit acknowledgments. Version 0.5.1 fixes the published
+TUI loading failure by deferring the legacy entry and installing its Solid runtime
+dependency. The agreed scope is terminal support; immediate desktop/web delivery
+remains explicitly unresolved.
 
 ## OpenCode 2 installation
 
@@ -12,7 +12,7 @@ or package publication is part of this work.
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [{
-    "package": "opencode-fleet-notify@0.5.0",
+    "package": "opencode-fleet-notify@0.5.1",
     "options": { "url": "https://gateway.example.com/api/fleet" }
   }]
 }
@@ -81,7 +81,7 @@ The package retains the official dual-generation export. V1 **1.18.29+** calls
 V1's singular `plugin` configuration and tuple options on those hosts:
 
 ```json
-{"plugin": [["opencode-fleet-notify@0.5.0", {"url":"https://gateway.example.com/api/fleet"}]]}
+{"plugin": [["opencode-fleet-notify@0.5.1", {"url":"https://gateway.example.com/api/fleet"}]]}
 ```
 
 The retained legacy path also removes three-display auto-acknowledgment and adds
