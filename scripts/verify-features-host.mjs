@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
 const legacy = process.argv.includes('--legacy')
-const root = resolve(new URL('..', import.meta.url).pathname)
+const root = resolve(process.env.FLEET_TEST_PACKAGE_PATH ?? new URL('..', import.meta.url).pathname)
 const fixture = await mkdtemp(join(tmpdir(), 'fleet-features-host-'))
 const project = join(fixture, 'project'); await mkdir(project)
 execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(fixture, 'key.pem'), '-out', join(fixture, 'cert.pem'), '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'], { stdio: 'ignore' })

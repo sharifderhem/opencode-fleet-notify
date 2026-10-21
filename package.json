@@ -1,15 +1,16 @@
 {
   "name": "opencode-fleet-notify",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Fleet notifications for OpenCode 1.x and 2.x with explicit acknowledgments",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./tui": "./src/tui.ts",
-    "./rpc": "./src/rpc.ts"
+    ".": "./dist/index.js",
+    "./tui": "./dist/tui.js",
+    "./rpc": "./dist/rpc.js"
   },
   "files": [
+    "dist",
     "src",
     "scripts",
     "README.md",
@@ -22,7 +23,10 @@
     "mock-server": "node scripts/mock-server.mjs",
     "test": "node --loader ./scripts/ts-loader.mjs test/all.mjs",
     "test:host": "node scripts/verify-host.mjs",
-    "test:features:host": "node scripts/verify-features-host.mjs"
+    "test:features:host": "node scripts/verify-features-host.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "test:desktop": "npm run build && node scripts/verify-desktop.mjs"
   },
   "license": "MIT",
   "repository": {

@@ -9,6 +9,16 @@ TUI loading failure by deferring the legacy entry and installing its Solid runti
 dependency. The agreed scope is terminal support; immediate desktop/web delivery
 remains explicitly unresolved.
 
+Version **0.6.1** fixes desktop server loading by shipping compiled JavaScript.
+The desktop's Node runtime does not resolve `.js` imports to TypeScript source
+files as the terminal's Bun runtime does. Tests now exercise the installed
+desktop's embedded server as well as both CLI generations.
+
+Put shared provider/model and plugin configuration in
+`~/.config/opencode/opencode.json(c)` so it applies inside Git projects too.
+A `~/opencode.json` file is an ancestor project configuration and V1 stops
+searching for that file at the project's worktree boundary.
+
 ## LiteLLM skills and model metadata (0.6.0)
 
 Version 0.6.0 automatically reads LiteLLM's existing
@@ -69,13 +79,17 @@ LiteLLM's daily invoice totals. No daily key-spend field or new UI is added.
 
 ### Local verification
 
-Run `npm run typecheck` and `npm test`. Real-host fixture checks use temporary HOME
+Run `npm run build`, `npm run typecheck`, and `npm test`. Real-host fixture checks use temporary HOME
 and XDG directories, fake LiteLLM responses, and a local HTTPS archive server:
 
 ```sh
 OPENCODE_BINARY=/path/to/opencode npm run test:features:host
 OPENCODE_BINARY=/path/to/opencode-v1 npm run test:features:host -- --legacy
 ```
+
+On Linux with OpenCode desktop installed, `npm run test:desktop` exercises its
+actual embedded Node server. Set `OPENCODE_DESKTOP_APP` and
+`OPENCODE_DESKTOP_ASAR` for non-default installation paths.
 
 The fixture requires OpenSSL. It makes no model calls and never uses a real key.
 
@@ -85,7 +99,7 @@ The fixture requires OpenSSL. It makes no model calls and never uses a real key.
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [{
-    "package": "opencode-fleet-notify@0.6.0",
+    "package": "opencode-fleet-notify@0.6.1",
     "options": { "url": "https://gateway.example.com/api/fleet" }
   }]
 }
@@ -154,7 +168,7 @@ The package retains the official dual-generation export. V1 **1.18.29+** calls
 V1's singular `plugin` configuration and tuple options on those hosts:
 
 ```json
-{"plugin": [["opencode-fleet-notify@0.6.0", {"url":"https://gateway.example.com/api/fleet"}]]}
+{"plugin": [["opencode-fleet-notify@0.6.1", {"url":"https://gateway.example.com/api/fleet"}]]}
 ```
 
 The retained legacy path also removes three-display auto-acknowledgment and adds
