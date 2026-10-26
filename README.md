@@ -1,7 +1,8 @@
 # opencode-fleet-notify
 
-Fleet notifications, additive LiteLLM skill sync, and native model metadata for
-OpenCode. Version **0.6.0** adds skills and metadata support on V1 and V2.
+Fleet notifications, additive LiteLLM skill sync, automatic MCP gateway access,
+and native model metadata for OpenCode. Version **0.7.0** adds MCP support on V1
+and V2; version **0.6.0** added skills and metadata support.
 
 Version **0.5.1** adds OpenCode 2.1.1 server and
 terminal support with explicit acknowledgments. Version 0.5.1 fixes the published
@@ -19,18 +20,18 @@ Put shared provider/model and plugin configuration in
 A `~/opencode.json` file is an ancestor project configuration and V1 stops
 searching for that file at the project's worktree boundary.
 
-## LiteLLM skills and model metadata (0.6.0)
+## LiteLLM skills, MCP, and model metadata
 
-Version 0.6.0 automatically reads LiteLLM's existing
-`/claude-code/plugins` and `/model/info` endpoints using the configured provider's
-base URL and matching API key. A trailing `/v1` is removed while proxy prefixes
-such as `/api` are preserved. No dashboard endpoint or extra credential is needed.
-These additions were introduced in 0.6.0.
+The plugin automatically reads LiteLLM's existing `/claude-code/plugins` and
+`/model/info` endpoints and derives its aggregate `/mcp` endpoint using the
+configured provider's base URL and matching API key. A trailing `/v1` is removed
+while proxy prefixes such as `/api` are preserved. No dashboard endpoint or extra
+credential is needed. Skills/metadata were introduced in 0.6.0 and MCP in 0.7.0.
 
 The provider named `litellm` is selected automatically. Otherwise, the plugin uses
 an unambiguous provider matching the notification URL's origin. Set plugin option
-`provider` to select a different ID explicitly. Set `skills: false` or
-`modelMetadata: false` to disable that feature. Notification credential overrides
+`provider` to select a different ID explicitly. Set `skills: false`, `mcp: false`,
+or `modelMetadata: false` to disable a feature. Notification credential overrides
 do not override the LiteLLM provider's credential.
 
 ### Additive skills sync
@@ -58,6 +59,34 @@ do not override the LiteLLM provider's credential.
 - V2 reloads skill discovery after writes. V1 discovers the folder normally;
   an already-open project may need a reload to refresh cached skill listings.
 
+### Automatic MCP gateway
+
+- One in-memory remote entry named `fleet-litellm` connects to the provider's
+  aggregate `/mcp` route. For a provider base URL of
+  `https://gateway.example.com/api`, the MCP URL is
+  `https://gateway.example.com/api/mcp`.
+- The connection sends the developer key only as
+  `x-litellm-api-key: Bearer <key>` and disables OAuth for this API-key connection.
+  LiteLLM returns only tools allowed to that key/team and enforces permissions on
+  every call. Upstream MCP URLs and credentials are never copied to the client.
+- Existing OpenCode configuration is unchanged: no provider, model, plugin, or MCP
+  edits are required, and saved config is never rewritten. A developer-owned
+  `fleet-litellm` collision is preserved and logged instead of overwritten.
+- New sessions and the existing five-minute cycle refresh the managed connection
+  so newly permitted tools are discovered. Startup retries avoid reconnect loops.
+  V2 reconciles only this entry; V1 reconnects it through OpenCode's MCP API.
+- Updating/reloading the plugin enables the feature by default. Set `mcp: false`
+  in the existing plugin options to opt out. LiteLLM with no permitted MCP tools
+  simply provides an empty catalog.
+- MCP tool descriptions consume model context. Administrators should expose
+  appropriately scoped servers/tools rather than an unnecessarily large catalog.
+
+To confirm operation, run `opencode mcp list` or inspect OpenCode's MCP status:
+`fleet-litellm` should be connected and permitted tools should be available. Ask
+for a harmless tool explicitly by name and verify its real result. A direct
+`tools/list` request to the same `/mcp` URL with that developer key must show only
+the key's permitted catalog; a denied key must not be able to call those tools.
+
 ### Native model fields
 
 LiteLLM prices are converted from dollars per token to OpenCode's dollars per
@@ -80,7 +109,8 @@ LiteLLM's daily invoice totals. No daily key-spend field or new UI is added.
 ### Local verification
 
 Run `npm run build`, `npm run typecheck`, and `npm test`. Real-host fixture checks use temporary HOME
-and XDG directories, fake LiteLLM responses, and a local HTTPS archive server:
+and XDG directories, fake LiteLLM responses, a local HTTPS archive server, and a
+streamable-HTTP MCP server:
 
 ```sh
 OPENCODE_BINARY=/path/to/opencode npm run test:features:host
@@ -92,6 +122,8 @@ actual embedded Node server. Set `OPENCODE_DESKTOP_APP` and
 `OPENCODE_DESKTOP_ASAR` for non-default installation paths.
 
 The fixture requires OpenSSL. It makes no model calls and never uses a real key.
+It checks MCP connection, tool discovery, a harmless call, denied credentials,
+new-tool refresh, offline recovery, and byte-for-byte unchanged saved config.
 
 ## OpenCode 2 installation
 
@@ -99,7 +131,7 @@ The fixture requires OpenSSL. It makes no model calls and never uses a real key.
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [{
-    "package": "opencode-fleet-notify@0.6.1",
+    "package": "opencode-fleet-notify@0.7.0",
     "options": { "url": "https://gateway.example.com/api/fleet" }
   }]
 }
@@ -168,13 +200,13 @@ The package retains the official dual-generation export. V1 **1.18.29+** calls
 V1's singular `plugin` configuration and tuple options on those hosts:
 
 ```json
-{"plugin": [["opencode-fleet-notify@0.6.1", {"url":"https://gateway.example.com/api/fleet"}]]}
+{"plugin": [["opencode-fleet-notify@0.7.0", {"url":"https://gateway.example.com/api/fleet"}]]}
 ```
 
 The retained legacy path also removes three-display auto-acknowledgment and adds
 network deadlines. It still uses its original file bridge, credential resolution,
-and `fleet_ack` tool. V1 runtime compatibility has not been re-tested with a V1
-binary in this change; the live verification below is specifically 2.1.1.
+and `fleet_ack` tool. MCP registration, dynamic refresh, denied credentials, and
+offline recovery are exercised against the installed desktop's embedded V1 server.
 
 ## Protocol
 
@@ -197,7 +229,7 @@ Requests authenticate with the gateway key in the Bearer header.
 `POST {url}/ack/{id}` sends `{ "action": "ack" }`. Any successful HTTP response
 confirms receipt; other responses retry. Acknowledgments are idempotent server-side.
 The plugin sends no code, prompts, or session contents to the fleet service.
-Skills/MCP synchronization is not implemented by this release.
+Skill synchronization and automatic MCP gateway registration are implemented as described above.
 
 ## Development and verification
 

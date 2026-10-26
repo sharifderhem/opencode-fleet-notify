@@ -3,13 +3,17 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Plugin, Hooks } from '@opencode-ai/plugin'
 import { gatewayGet, modelMetadata, selectProvider, type Gateway } from './gateway.js'
+import { MCP_NAME, remoteMcpConfig, sameMcpConfig, type RemoteMcpConfig } from './mcp.js'
 import { syncSkills, localSkillNames } from './skills.js'
 
-/** V1 config hook enriches provider metadata in memory, without disk config edits. */
-export const legacyFeatures: Plugin = async ({ directory }, options = {}) => {
+/** V1 config hook enriches providers and registers MCP in memory without disk edits. */
+export const legacyFeatures: Plugin = async ({ directory, client }, options = {}) => {
   let gateway: Gateway | undefined
+  let managedMcp: RemoteMcpConfig | undefined
+  let mcpCollision = false
   const abort = new AbortController()
   let pending: Promise<unknown> | undefined
+  let mcpPending: Promise<unknown> | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
   let extraPaths: string[] = []
   const refreshSkills = () => {
@@ -20,6 +24,15 @@ export const legacyFeatures: Plugin = async ({ directory }, options = {}) => {
       if (result.conflicts.length || result.failed.length) console.warn(`[fleet-notify] Skills: ${result.conflicts.length} conflicts preserved; ${result.failed.length} sources unavailable.`)
     })().catch(() => { if (!abort.signal.aborted) console.warn('[fleet-notify] Skills could not refresh; existing files preserved.') }).finally(() => { pending = undefined })
     return pending
+  }
+  const refreshMcp = () => {
+    if (!managedMcp || mcpCollision || mcpPending || options.mcp === false || abort.signal.aborted) return mcpPending
+    mcpPending = (async () => {
+      await client.mcp.disconnect({ path: { name: MCP_NAME }, query: { directory } })
+      const result = await client.mcp.connect({ path: { name: MCP_NAME }, query: { directory } })
+      if (result.error) throw result.error
+    })().catch(() => { if (!abort.signal.aborted) console.warn('[fleet-notify] MCP catalog could not refresh; another retry is scheduled.') }).finally(() => { mcpPending = undefined })
+    return mcpPending
   }
   const hooks: Hooks = {
     config: async config => {
@@ -33,6 +46,20 @@ export const legacyFeatures: Plugin = async ({ directory }, options = {}) => {
       } catch { /* Use this provider's configured key, never a different account. */ }
       if (typeof apiKey !== 'string' || !apiKey) return
       gateway = { providerID: selected.id, baseURL: selected.baseURL as string, apiKey }
+      if (options.mcp !== false) {
+        const next = remoteMcpConfig(gateway, false)
+        config.mcp ??= {}
+        const existing = config.mcp[MCP_NAME]
+        if (!existing || (managedMcp && sameMcpConfig(existing, managedMcp))) {
+          config.mcp[MCP_NAME] = next
+          managedMcp = next
+          mcpCollision = false
+        } else {
+          managedMcp = undefined
+          if (!mcpCollision) console.warn(`[fleet-notify] MCP: preserved developer-owned ${MCP_NAME} entry.`)
+          mcpCollision = true
+        }
+      }
       extraPaths = (config as typeof config & { skills?: { paths?: string[] } }).skills?.paths ?? []
       // V1 invokes provider.models before custom providers enter its database.
       // Enrich the in-memory config instead so custom LiteLLM providers work too.
@@ -59,14 +86,14 @@ export const legacyFeatures: Plugin = async ({ directory }, options = {}) => {
           }
         } catch { console.warn('[fleet-notify] Model metadata unavailable; existing values preserved.') }
       }
-      // Avoid a recursive config/skills request while the config hook is executing.
+      // Avoid recursive configuration or duplicate refresh work while the hook executes.
       if (!timer) {
-        const tick = async () => { await refreshSkills(); if (!abort.signal.aborted) { timer = setTimeout(tick, 300_000); timer.unref?.() } }
+        const tick = async () => { await Promise.all([refreshSkills(), refreshMcp()]); if (!abort.signal.aborted) { timer = setTimeout(tick, 300_000); timer.unref?.() } }
         timer = setTimeout(tick, 1000); timer.unref?.()
       }
     },
-    event: async ({ event }) => { if (event.type === 'session.created') await refreshSkills() },
-    dispose: async () => { abort.abort(); if (timer) clearTimeout(timer); await pending },
+    event: async ({ event }) => { if (event.type === 'session.created') await Promise.all([refreshSkills(), refreshMcp()]) },
+    dispose: async () => { abort.abort(); if (timer) clearTimeout(timer); await Promise.all([pending, mcpPending]) },
   }
   return hooks
 }

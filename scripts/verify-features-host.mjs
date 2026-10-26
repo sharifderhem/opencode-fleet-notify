@@ -13,13 +13,43 @@ const fixture = await mkdtemp(join(tmpdir(), 'fleet-features-host-'))
 const project = join(fixture, 'project'); await mkdir(project)
 execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(fixture, 'key.pem'), '-out', join(fixture, 'cert.pem'), '-days', '1', '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1'], { stdio: 'ignore' })
 let version = '1'; let downloads = 0; let catalogReads = 0; let metadataReads = 0
+let mcpInitializes = 0; let mcpLists = 0; let mcpCalls = 0; let mcpOfflineReads = 0
+let mcpOffline = false
 const archive = httpsServer({ key: await readFile(join(fixture, 'key.pem')), cert: await readFile(join(fixture, 'cert.pem')) }, (req, res) => {
   assert.equal(req.headers.authorization, undefined); downloads++
   res.end(zipSync({ 'skills/fleet-fixture/SKILL.md': strToU8(`---\nname: fleet-fixture\ndescription: Isolated host test\n---\nRevision ${version}\n`), 'skills/fleet-fixture/references/guide.md': strToU8('Reference fixture') }))
 })
 await new Promise(r => archive.listen(0, '127.0.0.1', r))
-const mock = createServer((req, res) => {
+const mock = createServer(async (req, res) => {
   if (!req.url.startsWith('/gateway/')) return res.writeHead(404).end()
+  if (req.url === '/gateway/mcp') {
+    if (mcpOffline) { mcpOfflineReads++; return res.writeHead(503).end('MCP fixture offline') }
+    if (req.headers['x-litellm-api-key'] !== 'Bearer fixture-key') return res.writeHead(403).end('MCP fixture denied')
+    assert.equal(req.headers.authorization, undefined)
+    if (req.method !== 'POST') return res.writeHead(405).end()
+    let body = ''
+    for await (const chunk of req) body += chunk
+    const message = JSON.parse(body)
+    if (message.method === 'notifications/initialized') return res.writeHead(202).end()
+    res.setHeader('Content-Type', 'application/json')
+    if (message.method === 'initialize') {
+      mcpInitializes++
+      return res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: { listChanged: true } }, serverInfo: { name: 'fleet-fixture', version: '1.0.0' } } }))
+    }
+    if (message.method === 'tools/list') {
+      mcpLists++
+      const tools = [{ name: 'fleet_fixture_echo', description: 'Return harmless fixture text', inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } }]
+      if (version === '2') tools.push({ name: 'fleet_fixture_added', description: 'Dynamically added fixture tool', inputSchema: { type: 'object', properties: {} } })
+      return res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { tools } }))
+    }
+    if (message.method === 'tools/call') {
+      mcpCalls++
+      assert.equal(message.params.name, 'fleet_fixture_echo')
+      return res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: `fixture echo: ${message.params.arguments.text}` }] } }))
+    }
+    if (message.method === 'ping') return res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} }))
+    return res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Unknown fixture method' } }))
+  }
   assert.equal(req.headers.authorization, 'Bearer fixture-key')
   res.setHeader('Content-Type', 'application/json')
   if (req.url === '/gateway/model/info') { metadataReads++; return res.end(JSON.stringify({ data: [{ model_name: 'fixture-model', model_info: { input_cost_per_token: 0.000002, output_cost_per_token: 0.000006, cache_read_input_token_cost: 0.000001, cache_creation_input_token_cost: 0.000003, max_input_tokens: 128000, max_output_tokens: 4096 } }] })) }
@@ -69,17 +99,44 @@ try {
   assert.equal(model.limit.context, 128000); assert.equal(model.limit.output, 4096)
   assert.deepEqual(legacy ? model.cost : model.cost[0], { input: 2, output: 6, cache: { read: 1, write: 3 } })
   assert.match(JSON.stringify(skills), /fleet-fixture/); assert.match(JSON.stringify(skills), /personal/)
-  const before = catalogReads
+  const mcps = await until(async () => { const value = await api('/mcp'); return JSON.stringify(value).includes('fleet-litellm') && JSON.stringify(value).includes('connected') && value }, 'MCP connection')
+  await until(() => mcpInitializes > 0 && mcpLists > 0, 'MCP discovery')
+  const callResponse = await fetch(baseURL.replace(/\/v1$/, '') + '/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'x-litellm-api-key': 'Bearer fixture-key' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'tools/call', params: { name: 'fleet_fixture_echo', arguments: { text: 'works' } } }),
+  })
+  assert.equal(callResponse.status, 200)
+  const call = await callResponse.json()
+  assert.equal(call.result.content[0].text, 'fixture echo: works'); assert.equal(mcpCalls, 1)
+  const denied = await fetch(baseURL.replace(/\/v1$/, '') + '/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'x-litellm-api-key': 'Bearer denied-key' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 100, method: 'tools/call', params: { name: 'fleet_fixture_echo', arguments: { text: 'denied' } } }),
+  })
+  assert.equal(denied.status, 403); assert.equal(mcpCalls, 1)
+  await writeFile(join(fixture, 'mcp.json'), JSON.stringify({ status: mcps, discovery: { initializes: mcpInitializes, lists: mcpLists }, call, denied: denied.status }, null, 2))
+  const before = catalogReads; const beforeMcpLists = mcpLists
   await api('/session', legacy ? { title: 'Refresh' } : { title: 'Refresh', location: { directory: project } })
   await until(() => catalogReads > before, 'repeat sync')
+  await until(() => mcpLists > beforeMcpLists, 'MCP catalog refresh on new session')
   await pause(300); assert.equal(downloads, 1)
-  version = '2'
+  version = '2'; const beforeAddedMcpLists = mcpLists
   await api('/session', legacy ? { title: 'Update' } : { title: 'Update', location: { directory: project } })
   await until(async () => (await readFile(join(skillRoot, 'fleet-fixture/SKILL.md'), 'utf8')).includes('Revision 2'), 'updated skill')
+  await until(() => mcpLists > beforeAddedMcpLists, 'new MCP tool discovery')
+  mcpOffline = true; const beforeOfflineReads = mcpOfflineReads
+  await api('/session', legacy ? { title: 'Offline' } : { title: 'Offline', location: { directory: project } })
+  await until(() => mcpOfflineReads > beforeOfflineReads, 'MCP offline failure')
+  await until(async () => { const value = await api('/mcp'); return JSON.stringify(value).includes('fleet-litellm') && JSON.stringify(value).includes('failed') && value }, 'MCP failed status')
+  mcpOffline = false; const beforeRecoveryLists = mcpLists
+  await api('/session', legacy ? { title: 'Recovery' } : { title: 'Recovery', location: { directory: project } })
+  await until(() => mcpLists > beforeRecoveryLists, 'MCP reconnect and catalog recovery')
+  await until(async () => { const value = await api('/mcp'); return JSON.stringify(value).includes('fleet-litellm') && JSON.stringify(value).includes('connected') && value }, 'MCP recovered status')
   assert.equal(downloads, 2)
   assert.match(await readFile(join(skillRoot, 'personal/SKILL.md'), 'utf8'), /Personal instructions/)
   assert.equal(await readFile(join(project, 'opencode.json'), 'utf8'), JSON.stringify(config))
-  console.log(JSON.stringify({ passed: true, legacy, fixture, checks: ['gateway prefix/auth', 'archive without gateway credentials', 'real skill discovery', 'preserved personal skill', 'model limits and exact prices', 'unchanged revision skips download', 'changed revision updates', 'saved config untouched'] }, null, 2))
+  console.log(JSON.stringify({ passed: true, legacy, fixture, checks: ['gateway prefix/auth', 'archive without gateway credentials', 'real skill discovery', 'preserved personal skill', 'model limits and exact prices', 'MCP connection and tool discovery', 'harmless MCP tool call', 'denied MCP credential', 'new MCP tool discovery on refresh', 'MCP offline recovery', 'unchanged revision skips download', 'changed revision updates', 'saved config untouched'] }, null, 2))
 } finally {
   child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 2000).unref(); mock.closeAllConnections(); archive.closeAllConnections()
   await Promise.all([new Promise(r => mock.close(r)), new Promise(r => archive.close(r))])

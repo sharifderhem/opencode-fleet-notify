@@ -7,6 +7,8 @@ import { zipSync, strToU8 } from 'fflate'
 import { gatewayURL, selectProvider, modelMetadata, enrichModel, gatewayGet } from '../src/gateway.ts'
 import { syncSkills, skillBundles, unpackZip, downloadSource } from '../src/skills.ts'
 import { legacyFeatures, withLegacyFeatures } from '../src/legacy-features.ts'
+import { MCP_NAME, remoteMcpConfig, sameMcpConfig } from '../src/mcp.ts'
+import { startFeatures } from '../src/features.ts'
 
 const gateway = { providerID: 'litellm', baseURL: 'https://gateway.test/prefix/v1', apiKey: 'fixture-key' }
 const skill = (body = 'Original instructions') => ({ 'SKILL.md': strToU8(`---\nname: example\ndescription: Example fixture\n---\n${body}\n`), 'references/guide.md': strToU8('Support file') })
@@ -131,3 +133,128 @@ test('Concurrent sync is refused and a crashed-process lock is reclaimed', async
   await writeFile(join(root, '.fleet-lock/pid'), '2147483647')
   assert.equal((await syncSkills(gateway, options)).installed, 1)
 }))
+
+test('MCP config derives the aggregate route and exact gateway credential', () => {
+  const config = remoteMcpConfig(gateway, true)
+  assert.equal(config.url, 'https://gateway.test/prefix/mcp')
+  assert.deepEqual(config.headers, { 'x-litellm-api-key': 'Bearer fixture-key' })
+  assert.equal(config.oauth, false); assert.equal(config.disabled, false)
+  assert.equal(remoteMcpConfig(gateway, false).enabled, true)
+  assert.equal(sameMcpConfig(config, remoteMcpConfig(gateway, true)), true)
+  assert.equal(sameMcpConfig(config, remoteMcpConfig({ ...gateway, apiKey: 'rotated' }, true)), false)
+})
+
+async function isolatedV1(options, run) {
+  const data = await mkdtemp(join(tmpdir(), 'fleet-auth-')); const previous = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = data
+  const hooks = await legacyFeatures({ directory: '/tmp' }, { skills: false, modelMetadata: false, ...options })
+  try { await run(hooks) }
+  finally {
+    await hooks.dispose()
+    if (previous === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = previous
+    await rm(data, { recursive: true, force: true })
+  }
+}
+
+test('V1 registers and rotates only its managed MCP entry', async () => isolatedV1({}, async hooks => {
+  const personal = { type: 'remote', url: 'https://personal.test/mcp', enabled: true }
+  const config = { provider: { litellm: { options: { baseURL: gateway.baseURL, apiKey: gateway.apiKey } } }, mcp: { personal } }
+  await hooks.config(config)
+  assert.equal(config.mcp[MCP_NAME].url, 'https://gateway.test/prefix/mcp')
+  assert.equal(config.mcp[MCP_NAME].headers['x-litellm-api-key'], 'Bearer fixture-key')
+  assert.equal(config.mcp.personal, personal)
+  config.provider.litellm.options.apiKey = 'rotated'
+  await hooks.config(config)
+  assert.equal(config.mcp[MCP_NAME].headers['x-litellm-api-key'], 'Bearer rotated')
+  assert.equal(config.mcp.personal, personal)
+}))
+
+test('V1 preserves MCP collisions and supports complete opt-out', async () => {
+  await isolatedV1({}, async hooks => {
+    const personal = { type: 'remote', url: 'https://personal.test/mcp', enabled: false }
+    const collision = { provider: { litellm: { options: { baseURL: gateway.baseURL, apiKey: gateway.apiKey } } }, mcp: { [MCP_NAME]: personal } }
+    await hooks.config(collision)
+    assert.equal(collision.mcp[MCP_NAME], personal)
+  })
+  await isolatedV1({ mcp: false }, async hooks => {
+    const disabled = { provider: { litellm: { options: { baseURL: gateway.baseURL, apiKey: gateway.apiKey } } } }
+    await hooks.config(disabled)
+    assert.equal(disabled.mcp, undefined)
+  })
+})
+
+function v2Fixture(options = {}, initial = []) {
+  const settings = { baseURL: gateway.baseURL, apiKey: gateway.apiKey }
+  const baseline = new Map(initial); const servers = new Map(initial); const transforms = []; const queue = []; const wake = new Set()
+  let reloads = 0; let disposed = 0
+  const replay = () => {
+    servers.clear(); for (const [name, config] of baseline) servers.set(name, config)
+    for (const transform of transforms) transform(editor)
+  }
+  const editor = { get: name => servers.get(name), set: (name, config) => servers.set(name, config) }
+  const ctx = {
+    options: { skills: false, modelMetadata: false, ...options }, location: { directory: '/tmp' },
+    provider: { list: async () => ({ data: [{ id: 'litellm', settings }] }) },
+    integration: { connection: {} },
+    mcp: {
+      transform: async callback => {
+        transforms.push(callback); callback(editor)
+        return { dispose: async () => { disposed++; const index = transforms.indexOf(callback); if (index >= 0) transforms.splice(index, 1) } }
+      },
+      reload: async () => { reloads++; replay() },
+    },
+    event: {
+      subscribe: async function* ({ signal }) {
+        while (!signal.aborted) {
+          if (queue.length) { yield queue.shift(); continue }
+          await new Promise(resolve => {
+            const done = () => { wake.delete(done); signal.removeEventListener('abort', done); resolve() }
+            wake.add(done); signal.addEventListener('abort', done, { once: true })
+          })
+        }
+      },
+    },
+  }
+  const emit = () => {
+    queue.push({ type: 'session.created', data: { parentID: undefined, location: { directory: '/tmp' }, sessionID: 's' } })
+    for (const done of [...wake]) done()
+  }
+  return { ctx, settings, servers, emit, reloads: () => reloads, disposed: () => disposed }
+}
+async function until(check, description) {
+  for (let i = 0; i < 200; i++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 5)) }
+  throw new Error(`Timed out: ${description}`)
+}
+
+test('V2 refreshes the MCP catalog and applies gateway key rotation', async () => {
+  const fixture = v2Fixture({}, [['personal', { type: 'remote', url: 'https://personal.test/mcp' }]])
+  const stop = startFeatures(fixture.ctx)
+  try {
+    await until(() => fixture.servers.has(MCP_NAME), 'V2 MCP registration')
+    assert.equal(fixture.servers.get(MCP_NAME).url, 'https://gateway.test/prefix/mcp')
+    assert.equal(fixture.servers.get('personal').url, 'https://personal.test/mcp')
+    assert.equal(fixture.reloads(), 0)
+    fixture.settings.apiKey = 'rotated'; fixture.emit()
+    await until(() => fixture.servers.get(MCP_NAME).headers['x-litellm-api-key'] === 'Bearer rotated', 'V2 key rotation')
+    assert.equal(fixture.reloads(), 1)
+    fixture.emit()
+    await until(() => fixture.reloads() === 3, 'unchanged MCP catalog refresh')
+    assert.equal(fixture.servers.get(MCP_NAME).headers['x-litellm-api-key'], 'Bearer rotated')
+  } finally { await stop() }
+  assert.equal(fixture.disposed(), 1)
+})
+
+test('V2 preserves developer MCP collisions and honors opt-out', async () => {
+  const personal = { type: 'remote', url: 'https://personal.test/mcp' }
+  const collision = v2Fixture({}, [[MCP_NAME, personal]])
+  const stopCollision = startFeatures(collision.ctx)
+  try {
+    await until(() => collision.servers.size === 1, 'V2 collision check')
+    assert.equal(collision.servers.get(MCP_NAME), personal)
+  } finally { await stopCollision() }
+  assert.equal(collision.servers.get(MCP_NAME), personal)
+  const disabled = v2Fixture({ mcp: false })
+  const stopDisabled = startFeatures(disabled.ctx)
+  try { await new Promise(resolve => setTimeout(resolve, 50)); assert.equal(disabled.servers.size, 0) }
+  finally { await stopDisabled() }
+})
