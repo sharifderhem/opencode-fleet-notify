@@ -81,7 +81,7 @@ export async function downloadSource(entry: Entry, signal?: AbortSignal): Promis
   const temporary = await mkdtemp(join(tmpdir(), 'fleet-skills-'))
   // No checkout, submodules, hooks, shell expansion, or inherited Git credentials.
   const env = { PATH: process.env.PATH, HOME: temporary, XDG_CONFIG_HOME: temporary, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0' }
-  const options = { env, timeout: 60_000, maxBuffer: MAX_BYTES, signal }
+  const options = { env, timeout: 60_000, maxBuffer: MAX_BYTES, signal, windowsHide: true }
   try {
     const repo = join(temporary, 'repo')
     await run('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'credential.helper=', 'clone', '--depth=1', '--filter=blob:none', '--no-checkout', ...(source.ref ? ['--branch', source.ref] : []), '--', url, repo], options)

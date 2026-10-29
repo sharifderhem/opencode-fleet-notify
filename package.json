@@ -1,6 +1,6 @@
 {
   "name": "opencode-fleet-notify",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Fleet notifications, LiteLLM skills, MCP gateway access, and model metadata for OpenCode",
   "type": "module",
   "main": "dist/index.js",

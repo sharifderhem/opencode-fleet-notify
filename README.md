@@ -1,8 +1,8 @@
 # opencode-fleet-notify
 
 Fleet notifications, additive LiteLLM skill sync, automatic MCP gateway access,
-and native model metadata for OpenCode. Version **0.7.0** adds MCP support on V1
-and V2; version **0.6.0** added skills and metadata support.
+and native model metadata for OpenCode. Version **0.7.1** hides Git helper console
+windows on Windows; version **0.7.0** added MCP support on V1 and V2.
 
 Version **0.5.1** adds OpenCode 2.1.1 server and
 terminal support with explicit acknowledgments. Version 0.5.1 fixes the published
@@ -131,7 +131,7 @@ new-tool refresh, offline recovery, and byte-for-byte unchanged saved config.
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [{
-    "package": "opencode-fleet-notify@0.7.0",
+    "package": "opencode-fleet-notify@0.7.1",
     "options": { "url": "https://gateway.example.com/api/fleet" }
   }]
 }
@@ -200,7 +200,7 @@ The package retains the official dual-generation export. V1 **1.18.29+** calls
 V1's singular `plugin` configuration and tuple options on those hosts:
 
 ```json
-{"plugin": [["opencode-fleet-notify@0.7.0", {"url":"https://gateway.example.com/api/fleet"}]]}
+{"plugin": [["opencode-fleet-notify@0.7.1", {"url":"https://gateway.example.com/api/fleet"}]]}
 ```
 
 The retained legacy path also removes three-display auto-acknowledgment and adds
