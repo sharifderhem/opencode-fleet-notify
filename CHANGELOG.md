@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1
+
+- Background skills and MCP catalog refresh now runs every hour instead of every five minutes
+  (option `refreshMinutes`, default 60, minimum 5). Idle clients were generating `list_mcp_tools`
+  traffic every ~2.5 minutes. Notification polling is unchanged. Startup refresh, fast startup
+  retries and the session-created refresh are unchanged; a refresh still re-lists MCP tools so new
+  gateway tools are discovered.
+
 ## 0.8.0 (2026-11-23)
 
 - Fix: git skill sources (git-subdir/github/url) fetched each file lazily from a partial clone (about 25 s for 22 files) and the sync failed; now one batched sparse checkout (about 1 s). Failed sources report the reason.

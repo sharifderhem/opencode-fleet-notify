@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Plugin, Hooks } from '@opencode-ai/plugin'
-import { gatewayGet, modelMetadata, selectProvider, type Gateway } from './gateway.js'
+import { gatewayGet, refreshIntervalMs, modelMetadata, selectProvider, type Gateway } from './gateway.js'
 import { MCP_NAME, remoteMcpConfig, sameMcpConfig, type RemoteMcpConfig } from './mcp.js'
 import { syncSkills, localSkillNames } from './skills.js'
 import { detectV1Capabilities, doctorFile, errorText, gitAvailable, health, startUpdateCheck, type Feature } from './health.js'
@@ -112,7 +112,7 @@ export const legacyFeatures: Plugin = async ({ directory, client }, options = {}
       }
       // Avoid recursive configuration or duplicate refresh work while the hook executes.
       if (!timer) {
-        const tick = async () => { await Promise.all([refreshSkills(), refreshMcp()]); if (!abort.signal.aborted) { timer = setTimeout(tick, 300_000); timer.unref?.() } }
+        const tick = async () => { await Promise.all([refreshSkills(), refreshMcp()]); if (!abort.signal.aborted) { timer = setTimeout(tick, refreshIntervalMs(options as Record<string, unknown>)); timer.unref?.() } }
         timer = setTimeout(tick, 1000); timer.unref?.()
       }
       health.writeReport()

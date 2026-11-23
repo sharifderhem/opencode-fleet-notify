@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Health, VERSION, isNewer, maskSecrets, stateDir, logFile, updateAdvice, checkForUpdate, detectV1Capabilities, detectV2Capabilities, LOG_CAP_BYTES } from '../src/health.ts'
-import { anySignal } from '../src/gateway.ts'
+import { anySignal, refreshIntervalMs, DEFAULT_REFRESH_MS } from '../src/gateway.ts'
 import { legacyFeatures, withLegacyFeatures } from '../src/legacy-features.ts'
 import { startFeatures } from '../src/features.ts'
 import plugin from '../src/index.ts'
@@ -245,4 +245,13 @@ test('V1: update notice uses TUI toast when available and is silent without it',
   h.e = { fetch: registry('99.0.0'), env: { XDG_STATE_HOME: join(tmpdir(), `fleet-upd2-${process.pid}-${Date.now()}`) } }
   await withLegacyFeatures(async () => ({}))({ directory: '/tmp', client: {} }, { skills: false, mcp: false, modelMetadata: false })
   await sleep(30) // no toast API: must simply not throw
+})
+
+test('refresh interval defaults to one hour, option clamped to >=5 minutes', () => {
+  assert.equal(DEFAULT_REFRESH_MS, 3_600_000)
+  assert.equal(refreshIntervalMs(undefined), 3_600_000)
+  assert.equal(refreshIntervalMs({}), 3_600_000)
+  assert.equal(refreshIntervalMs({ refreshMinutes: 1 }), 3_600_000)
+  assert.equal(refreshIntervalMs({ refreshMinutes: 'x' }), 3_600_000)
+  assert.equal(refreshIntervalMs({ refreshMinutes: 15 }), 900_000)
 })

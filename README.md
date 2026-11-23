@@ -38,8 +38,9 @@ do not override the LiteLLM provider's credential.
 
 ### Additive skills sync
 
-- Sync the catalog visible to that key at startup, on new sessions, and every five
-  minutes. Skills live on the OpenCode server in
+- Sync the catalog visible to that key at startup, on new sessions, and every hour
+  (option `refreshMinutes`, default 60, minimum 5). Notification polling (about every 90 seconds)
+  is separate and unchanged. Skills live on the OpenCode server in
   `$XDG_CONFIG_HOME/opencode/skills` (normally `~/.config/opencode/skills`).
 - Download the catalog's external sources without sending the LiteLLM key.
   Supported sources: public HTTPS GitHub/Git repositories, Git subdirectories,

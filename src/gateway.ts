@@ -102,3 +102,10 @@ export function enrichModel(model: any, info: ModelMetadata, v2: boolean): void 
   if (info.write !== undefined) cost.cache.write = info.write
   if (v2 && !baseline) model.cost.push(cost)
 }
+
+/** Background refresh of skills + MCP catalog (NOT notification polling). Default 1 hour; option `refreshMinutes` (min 5). */
+export const DEFAULT_REFRESH_MS = 3_600_000
+export function refreshIntervalMs(options?: Record<string, unknown>): number {
+  const minutes = Number(options?.refreshMinutes)
+  return Number.isFinite(minutes) && minutes >= 5 ? Math.floor(minutes * 60_000) : DEFAULT_REFRESH_MS
+}

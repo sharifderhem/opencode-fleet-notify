@@ -1,5 +1,5 @@
 import type { Plugin } from '@opencode/plugin'
-import { enrichModel, gatewayGet, modelMetadata, selectProvider, type Gateway, type ModelMetadata } from './gateway.js'
+import { enrichModel, gatewayGet, refreshIntervalMs, modelMetadata, selectProvider, type Gateway, type ModelMetadata } from './gateway.js'
 import { MCP_NAME, remoteMcpConfig, sameMcpConfig, type RemoteMcpConfig } from './mcp.js'
 import { syncSkills } from './skills.js'
 import { detectV2Capabilities, errorText, gitAvailable, health, type Feature } from './health.js'
@@ -109,7 +109,7 @@ export function startFeatures(ctx: Plugin.Context): () => Promise<void> {
   void refresh(false)
   // Startup retries do not reconnect MCP; sessions and the interval refresh its catalog.
   let startupRetries = 5
-  const schedule = () => { retry = setTimeout(async () => { await refresh(startupRetries <= 0); if (!abort.signal.aborted) schedule() }, startupRetries-- > 0 ? 1000 : 300_000); retry.unref?.() }
+  const schedule = () => { retry = setTimeout(async () => { await refresh(startupRetries <= 0); if (!abort.signal.aborted) schedule() }, startupRetries-- > 0 ? 1000 : refreshIntervalMs(ctx.options)); retry.unref?.() }
   schedule()
   const events = (async () => {
     for await (const event of ctx.event.subscribe({ signal: abort.signal })) {
