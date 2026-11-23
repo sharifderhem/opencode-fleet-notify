@@ -46,10 +46,22 @@ export async function readBytes(response: Response, max: number): Promise<Uint8A
   return bytes
 }
 
+/** AbortSignal.any needs Node 20.3+; fall back to manual linking on older runtimes. */
+export function anySignal(signals: AbortSignal[]): AbortSignal {
+  const native = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any
+  if (typeof native === 'function') return native.call(AbortSignal, signals)
+  const controller = new AbortController()
+  for (const signal of signals) {
+    if (signal.aborted) { controller.abort(signal.reason); break }
+    signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true })
+  }
+  return controller.signal
+}
+
 export async function gatewayGet(gateway: Gateway, route: string, signal?: AbortSignal): Promise<unknown> {
   const response = await fetch(gatewayURL(gateway.baseURL, route), {
     headers: { Authorization: `Bearer ${gateway.apiKey}`, Accept: 'application/json' },
-    redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+    redirect: 'error', signal: signal ? anySignal([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
   })
   return JSON.parse(new TextDecoder().decode(await readBytes(response, 4 * 1024 * 1024)))
 }

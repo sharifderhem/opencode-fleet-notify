@@ -1,8 +1,10 @@
 # opencode-fleet-notify
 
 Fleet notifications, additive LiteLLM skill sync, automatic MCP gateway access,
-and native model metadata for OpenCode. Version **0.7.1** hides Git helper console
-windows on Windows; version **0.7.0** added MCP support on V1 and V2.
+and native model metadata for OpenCode. Version **0.8.0** adds staleness detection,
+`/fleet-doctor`, per-feature status, and a small log file (see "Diagnostics and updates").
+Version **0.7.1** hides Git helper console windows on Windows; version **0.7.0** added
+MCP support on V1 and V2.
 
 Version **0.5.1** adds OpenCode 2.1.1 server and
 terminal support with explicit acknowledgments. Version 0.5.1 fixes the published
@@ -125,13 +127,44 @@ The fixture requires OpenSSL. It makes no model calls and never uses a real key.
 It checks MCP connection, tool discovery, a harmless call, denied credentials,
 new-tool refresh, offline recovery, and byte-for-byte unchanged saved config.
 
+## Diagnostics and updates
+
+**Pin an exact version.** OpenCode does not reliably refresh `opencode-fleet-notify@latest`:
+1.x never re-checks the registry once the package is cached, and 2.x auto-updates
+`name@latest` only from 2.4.0 (2.1.x has `opencode plugin check/update`). Use
+`"opencode-fleet-notify@x.y.z"` in your config and change it to upgrade.
+
+- **Update notice.** At startup the plugin makes one short, unauthenticated request to
+  the public npm registry (`/opencode-fleet-notify/latest`, 4 s timeout, at most once per
+  24 h, failures ignored). If a newer version exists it shows a toast (OpenCode 1.x server
+  toast; 2.x terminal toast; otherwise the log, `/fleet-doctor`, and `sessionMessages`
+  when enabled) with the fix: pin the exact version; `opencode plugin update
+  opencode-fleet-notify` on 2.x; delete `~/.cache/opencode/packages/opencode-fleet-notify@latest`
+  on 1.x. Opt out with plugin option `updateCheck: false` or `FLEET_NOTIFY_UPDATE_CHECK=0`.
+- **`/fleet-doctor`.** Prints plugin version (and latest known), OpenCode version and
+  entry mode where detectable, OS, node/bun runtime, missing host APIs, and a status per
+  feature (`notifications`, `skills`, `mcp`, `modelMetadata`): `ok`,
+  `skipped:<reason>` (no provider matched, no apiKey, disabled by option, host lacks an
+  API, developer-owned MCP entry preserved) or `failed:<error>` (including "git not found
+  on PATH" for Git skill sources). Credentials are masked. On 2.x the report is queued
+  as session input (no model call; same desktop/web limitation as below). On 1.x the
+  command asks the model to read `<state dir>/fleet-doctor.txt` and print it.
+- **Isolation.** Notifications, skills, MCP and model metadata fail independently and
+  never throw into OpenCode. Host APIs are feature-tested, not version-checked.
+- **Log file.** `fleet-notify.log` in `$XDG_STATE_HOME/opencode-fleet-notify` (default
+  `~/.local/state/opencode-fleet-notify`; `%LOCALAPPDATA%\opencode-fleet-notify` on
+  Windows). One file, capped at 128 KB with one `.1` backup, secrets masked. It records
+  load (version, host, runtime), feature status changes, update availability and failures.
+- Requirements: Node 20.3+ is recommended; an `AbortSignal.any` fallback keeps older
+  runtimes working. Git must be on `PATH` for Git skill sources.
+
 ## OpenCode 2 installation
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [{
-    "package": "opencode-fleet-notify@0.7.1",
+    "package": "opencode-fleet-notify@0.8.0",
     "options": { "url": "https://gateway.example.com/api/fleet" }
   }]
 }

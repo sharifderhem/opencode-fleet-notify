@@ -5,9 +5,11 @@ import type { Plugin, Hooks } from '@opencode-ai/plugin'
 import { gatewayGet, modelMetadata, selectProvider, type Gateway } from './gateway.js'
 import { MCP_NAME, remoteMcpConfig, sameMcpConfig, type RemoteMcpConfig } from './mcp.js'
 import { syncSkills, localSkillNames } from './skills.js'
+import { detectV1Capabilities, doctorFile, errorText, gitAvailable, health, startUpdateCheck, type Feature } from './health.js'
 
 /** V1 config hook enriches providers and registers MCP in memory without disk edits. */
 export const legacyFeatures: Plugin = async ({ directory, client }, options = {}) => {
+  const caps = detectV1Capabilities(client)
   let gateway: Gateway | undefined
   let managedMcp: RemoteMcpConfig | undefined
   let mcpCollision = false
@@ -20,31 +22,50 @@ export const legacyFeatures: Plugin = async ({ directory, client }, options = {}
     if (!gateway || pending || options.skills === false || abort.signal.aborted) return pending
     pending = (async () => {
       const result = await syncSkills(gateway!, { signal: abort.signal, existingNames: await localSkillNames(directory, extraPaths) })
+      if (result.failed.length) health.set('skills', `failed:${result.failed.length} source(s) unavailable [${(result.reasons ?? []).join('; ')}]${await gitAvailable() ? '' : ' (git not found on PATH; Git skill sources need it)'}`, `${result.conflicts.length} conflicts preserved`)
+      else health.set('skills', 'ok', `${result.conflicts.length} conflicts preserved`)
       if (result.installed || result.updated) console.info('[fleet-notify] Skills synced; V1 may require reloading the project to discover changes.')
       if (result.conflicts.length || result.failed.length) console.warn(`[fleet-notify] Skills: ${result.conflicts.length} conflicts preserved; ${result.failed.length} sources unavailable.`)
-    })().catch(() => { if (!abort.signal.aborted) console.warn('[fleet-notify] Skills could not refresh; existing files preserved.') }).finally(() => { pending = undefined })
+    })().catch((error) => { if (!abort.signal.aborted) { health.set('skills', `failed:${errorText(error)}`); console.warn('[fleet-notify] Skills could not refresh; existing files preserved.') } }).finally(() => { pending = undefined })
     return pending
   }
   const refreshMcp = () => {
     if (!managedMcp || mcpCollision || mcpPending || options.mcp === false || abort.signal.aborted) return mcpPending
+    if (!caps['mcp.connect'] || !caps['mcp.disconnect']) { health.set('mcp', 'skipped:host client lacks mcp.connect/disconnect (config entry still registered)'); return mcpPending }
     mcpPending = (async () => {
       await client.mcp.disconnect({ path: { name: MCP_NAME }, query: { directory } })
       const result = await client.mcp.connect({ path: { name: MCP_NAME }, query: { directory } })
       if (result.error) throw result.error
-    })().catch(() => { if (!abort.signal.aborted) console.warn('[fleet-notify] MCP catalog could not refresh; another retry is scheduled.') }).finally(() => { mcpPending = undefined })
+      health.set('mcp', 'ok')
+    })().catch((error) => { if (!abort.signal.aborted) health.set('mcp', `failed:${errorText(error)}`); if (!abort.signal.aborted) console.warn('[fleet-notify] MCP catalog could not refresh; another retry is scheduled.') }).finally(() => { mcpPending = undefined })
     return mcpPending
+  }
+  /** V1 has no local-command API: /fleet-doctor asks the model to print the report file (no tools beyond read). */
+  const registerDoctor = (config: Record<string, any>) => {
+    config.command ??= {}
+    if (config.command['fleet-doctor']) return
+    config.command['fleet-doctor'] = {
+      description: 'Show opencode-fleet-notify version, host info, and per-feature status',
+      template: `Use the read tool to read the file ${doctorFile(health.e)} and print its entire contents exactly as written in a code block. Do nothing else and add no commentary.`,
+    }
   }
   const hooks: Hooks = {
     config: async config => {
+     try {
+      const disabled = (feature: Feature, off: boolean) => { if (off) health.set(feature, 'skipped:disabled by plugin option'); return off }
+      disabled('skills', options.skills === false); disabled('mcp', options.mcp === false); disabled('modelMetadata', options.modelMetadata === false)
+      const skipAll = (reason: string) => { for (const [f, off] of [['skills', options.skills === false], ['mcp', options.mcp === false], ['modelMetadata', options.modelMetadata === false]] as const) if (!off) health.set(f, `skipped:${reason}`) }
+      registerDoctor(config as Record<string, any>)
       const candidates = Object.entries(config.provider ?? {}).map(([id, p]) => ({ id, baseURL: p.options?.baseURL, apiKey: p.options?.apiKey }))
       const selected = selectProvider(candidates, options)
-      if (!selected) return
+      if (!selected) return skipAll(typeof options.provider === 'string' ? `no provider matched options.provider "${options.provider}" with a valid baseURL` : 'no provider matched (need a provider named "litellm" or options.provider)')
       let apiKey = selected.apiKey
       try {
         const auth = JSON.parse(await readFile(join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'opencode', 'auth.json'), 'utf8'))
         if (auth[selected.id]?.type === 'api' && typeof auth[selected.id].key === 'string') apiKey = auth[selected.id].key
       } catch { /* Use this provider's configured key, never a different account. */ }
-      if (typeof apiKey !== 'string' || !apiKey) return
+      if (typeof apiKey !== 'string' || !apiKey) return skipAll(`no apiKey for provider "${selected.id}" (provider options or auth.json)`)
+      health.addSecret(apiKey)
       gateway = { providerID: selected.id, baseURL: selected.baseURL as string, apiKey }
       if (options.mcp !== false) {
         const next = remoteMcpConfig(gateway, false)
@@ -54,8 +75,10 @@ export const legacyFeatures: Plugin = async ({ directory, client }, options = {}
           config.mcp[MCP_NAME] = next
           managedMcp = next
           mcpCollision = false
+          health.set('mcp', 'ok')
         } else {
           managedMcp = undefined
+          health.set('mcp', 'skipped:developer-owned fleet-litellm entry preserved')
           if (!mcpCollision) console.warn(`[fleet-notify] MCP: preserved developer-owned ${MCP_NAME} entry.`)
           mcpCollision = true
         }
@@ -84,15 +107,21 @@ export const legacyFeatures: Plugin = async ({ directory, client }, options = {}
               if (limit.context !== undefined && limit.output !== undefined) model.limit = limit as typeof model.limit
             }
           }
-        } catch { console.warn('[fleet-notify] Model metadata unavailable; existing values preserved.') }
+          health.set('modelMetadata', 'ok')
+        } catch (error) { health.set('modelMetadata', `failed:${errorText(error)}`); console.warn('[fleet-notify] Model metadata unavailable; existing values preserved.') }
       }
       // Avoid recursive configuration or duplicate refresh work while the hook executes.
       if (!timer) {
         const tick = async () => { await Promise.all([refreshSkills(), refreshMcp()]); if (!abort.signal.aborted) { timer = setTimeout(tick, 300_000); timer.unref?.() } }
         timer = setTimeout(tick, 1000); timer.unref?.()
       }
+      health.writeReport()
+     } catch (error) {
+      // The host must never fail because of this plugin; leave config untouched.
+      for (const f of ['skills', 'mcp', 'modelMetadata'] as const) if (!health.statuses.get(f)?.status.startsWith('skipped')) health.set(f, `failed:${errorText(error)}`)
+     }
     },
-    event: async ({ event }) => { if (event.type === 'session.created') await Promise.all([refreshSkills(), refreshMcp()]) },
+    event: async ({ event }) => { if (event.type === 'session.created') { await Promise.all([refreshSkills(), refreshMcp()]); health.writeReport() } },
     dispose: async () => { abort.abort(); if (timer) clearTimeout(timer); await Promise.all([pending, mcpPending]) },
   }
   return hooks
@@ -100,13 +129,30 @@ export const legacyFeatures: Plugin = async ({ directory, client }, options = {}
 
 export function withLegacyFeatures(notifications: Plugin): Plugin {
   return async (input, options) => {
-    const features = await legacyFeatures(input, options)
-    const original = await notifications(input, options)
+    const client = (input as { client?: unknown }).client
+    health.loaded('v1', detectV1Capabilities(client))
+    const globalHealth = (client as any)?.global?.health
+    if (typeof globalHealth === 'function') void Promise.resolve(globalHealth.call((client as any).global)).then((r: any) => { const v = r?.data?.version ?? r?.version; if (typeof v === 'string') health.host.version = v }).catch(() => {})
+    // Features and notifications are isolated from each other and from the host.
+    let features: Hooks = {}
+    try { features = await legacyFeatures(input, options) } catch (error) {
+      for (const f of ['skills', 'mcp', 'modelMetadata'] as const) health.set(f, `failed:${errorText(error)}`)
+    }
+    let original: Hooks = {}
+    try { original = await notifications(input, options) } catch (error) { health.set('notifications', `failed:${errorText(error)}`) }
+    const notify = async (text: string) => {
+      if (!health.caps['tui.showToast']) return
+      await (client as any).tui.showToast({ body: { title: 'Fleet notify update', message: text, variant: 'warning', duration: 30_000 } })
+    }
+    startUpdateCheck(health, (options ?? {}) as Record<string, unknown>, notify)
+    const guard = async (name: string, fn?: () => unknown) => {
+      try { await fn?.() } catch (error) { health.log('error', `${name} hook failed: ${errorText(error)}`) }
+    }
     const combined: Hooks = {
       ...original,
-      async config(config) { await original.config?.(config); await features.config?.(config) },
-      async event(event) { await Promise.all([original.event?.(event), features.event?.(event)]) },
-      async dispose() { await Promise.all([original.dispose?.(), features.dispose?.()]) },
+      async config(config) { await guard('notifications.config', () => original.config?.(config)); await guard('features.config', () => features.config?.(config)) },
+      async event(event) { await Promise.all([guard('notifications.event', () => original.event?.(event)), guard('features.event', () => features.event?.(event))]) },
+      async dispose() { await Promise.all([guard('notifications.dispose', () => original.dispose?.()), guard('features.dispose', () => features.dispose?.())]) },
     }
     return combined
   }

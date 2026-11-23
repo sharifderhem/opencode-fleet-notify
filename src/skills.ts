@@ -15,7 +15,7 @@ type Files = Record<string, Uint8Array>
 type Entry = { name: string; version?: string; source: { source: string; repo?: string; url?: string; path?: string; ref?: string; sha256?: string } }
 type Installed = { owner: string; revision: string; hashes: Record<string, string> }
 type State = Record<string, Installed>
-export type SyncResult = { installed: number; updated: number; unchanged: number; conflicts: string[]; failed: string[] }
+export type SyncResult = { installed: number; updated: number; unchanged: number; conflicts: string[]; failed: string[]; reasons?: string[] }
 export const defaultSkillsRoot = () => join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'opencode', 'skills')
 
 /** V1 has no skill inventory on the legacy plugin client. Inspect discovery roots. */
@@ -85,6 +85,9 @@ export async function downloadSource(entry: Entry, signal?: AbortSignal): Promis
   try {
     const repo = join(temporary, 'repo')
     await run('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'credential.helper=', 'clone', '--depth=1', '--filter=blob:none', '--no-checkout', ...(source.ref ? ['--branch', source.ref] : []), '--', url, repo], options)
+    // One batched blob fetch (sparse checkout) instead of one lazy network round-trip per file (25s vs 1s on real sources).
+    if (source.path) await run('git', ['-C', repo, '-c', 'core.hooksPath=/dev/null', 'sparse-checkout', 'set', '--no-cone', `/${source.path}/`], options)
+    await run('git', ['-C', repo, '-c', 'core.hooksPath=/dev/null', 'checkout', '-q', 'HEAD'], options)
     const tree = await run('git', ['-C', repo, 'ls-tree', '-rz', '--full-tree', 'HEAD'], options)
     const files: Files = Object.create(null); let size = 0; let count = 0
     for (const line of tree.stdout.split('\0').filter(Boolean)) {
@@ -236,7 +239,7 @@ export async function syncSkills(gateway: Gateway, options: {
             if (current) { await rm(backup, { recursive: true }); result.updated++ } else result.installed++
           } finally { await rm(stage, { recursive: true, force: true }) }
         }
-      } catch { result.failed.push(entry.name) }
+      } catch (error) { result.failed.push(entry.name); (result.reasons ??= []).push(`${entry.name}: ${String((error as Error)?.message ?? error).replace(/\s+/g, ' ').slice(0, 160)}`) }
     }
     // Additive by design: catalog withdrawal never deletes local skills.
     return result

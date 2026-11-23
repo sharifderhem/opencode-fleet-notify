@@ -6,22 +6,58 @@ import { createNotifications, message, restore } from "./notifications.js"
 import { Fleet } from "./rpc.js"
 import { startFeatures } from "./features.js"
 import { withLegacyFeatures } from "./legacy-features.js"
+import { detectV2Capabilities, errorText, health, startUpdateCheck } from "./health.js"
+
+const hostVersion = (ctx: any): string | undefined => {
+  for (const value of [ctx?.host?.version, ctx?.app?.version, ctx?.version, ctx?.opencode?.version]) if (typeof value === "string") return value
+  return undefined
+}
 
 const definition = Plugin.define({
   id: "opencode-fleet-notify",
   setup(ctx) {
-    const stopFeatures = startFeatures(ctx)
+    const disposers: Array<() => Promise<void>> = []
+    const caps = detectV2Capabilities(ctx)
+    health.loaded("v2", caps, hostVersion(ctx))
+    // Each feature is isolated: a failure in one never reaches the others or the host.
+    let stopFeatures: () => Promise<void> = async () => {}
+    try { stopFeatures = startFeatures(ctx) } catch (error) {
+      for (const f of ["skills", "mcp", "modelMetadata"] as const) health.set(f, `failed:${errorText(error)}`)
+    }
+    const doctor = (async () => {
+      if (!caps["command.transform"]) return
+      const registration = await ctx.command.transform((editor) => {
+        editor.add({
+          name: "fleet-doctor", description: "Show opencode-fleet-notify version, host info, and per-feature status",
+          execute: async ({ sessionID: sid }) => {
+            health.writeReport()
+            try { await ctx.session.synthetic({ sessionID: sid, resume: false, text: health.report() }) }
+            catch (error) { health.log("warn", `fleet-doctor could not deliver: ${errorText(error)}`) }
+          },
+        })
+      })
+      disposers.push(() => registration.dispose())
+    })().catch((error) => health.log("warn", `fleet-doctor unavailable: ${errorText(error)}`))
+    startUpdateCheck(health, ctx.options ?? {}, async (text) => {
+      // TUI shows this through the rpc `notice` method; elsewhere it is in the log and /fleet-doctor.
+      if (ctx.options?.sessionMessages !== true || !caps["session.synthetic"]) return
+      try {
+        const sessions = await ctx.session.list({ directory: ctx.location.directory, limit: 20 })
+        const id = sessions.data.filter((s) => !s.parentID && !s.time.archived).sort((a, b) => b.time.updated - a.time.updated)[0]?.id
+        if (id) await ctx.session.synthetic({ sessionID: id, text, resume: false })
+      } catch { /* Logged already. */ }
+    })
     const controller = new AbortController()
     let stop: (() => void) | undefined
-    const disposers: Array<() => Promise<void>> = []
     // Discovery and network work must not hold up OpenCode startup.
     const ready = (async () => {
       let config: Awaited<ReturnType<typeof resolveConfig>>
       let discoveryAttempts = 0
       // Provider transforms may finish after our setup. Keep discovery retryable.
       while (!controller.signal.aborted) {
-        try { config = await resolveConfig(ctx) } catch { /* Retry unavailable registries/discovery. */ }
+        try { config = await resolveConfig(ctx) } catch (error) { health.set("notifications", `failed:${errorText(error)}`) /* Retry unavailable registries/discovery. */ }
         if (config) break
+        if (!health.statuses.has("notifications")) health.set("notifications", "skipped:no fleet server or apiKey resolved yet (set options.url / FLEET_NOTIFY_URL; retrying)")
         await new Promise<void>((resolve) => {
           const done = () => { clearTimeout(timer); controller.signal.removeEventListener("abort", done); resolve() }
           const timer = setTimeout(done, Math.min(3000 * 2 ** discoveryAttempts++, 60_000))
@@ -31,6 +67,8 @@ const definition = Plugin.define({
         })
       }
       if (!config || controller.signal.aborted) return
+      health.addSecret(config.apiKey)
+      health.set("notifications", "ok")
       const key = `notifications-v2-${createHash("sha256").update(`${ctx.location.directory}\0${config.url}\0${config.apiKey}`).digest("hex")}`
       const state = restore(await ctx.storage.get(key))
       let sessionID: string | undefined
@@ -74,6 +112,7 @@ const definition = Plugin.define({
         list: async () => engine.list(),
         seen: async (input) => { await engine.seen((input as { id: string }).id); return null },
         acknowledge: async (input) => ({ ok: await engine.acknowledge((input as { id: string }).id) }),
+        notice: async () => health.updateNotice ?? null,
       })
       disposers.push(() => rpc.dispose())
       const command = await ctx.command.transform((editor) => {
@@ -107,6 +146,7 @@ const definition = Plugin.define({
       controller.abort()
       stop?.()
       for (const dispose of disposers.splice(0)) void dispose().catch(() => {})
+      health.set("notifications", `failed:${errorText(error)}`)
       console.warn(`[fleet-notify] setup failed: ${error instanceof Error ? error.name : "unknown error"}`)
     })
     return async () => {
@@ -114,6 +154,8 @@ const definition = Plugin.define({
       controller.abort()
       stop?.()
       await ready
+      await doctor
+      for (const dispose of disposers.splice(0)) await dispose().catch(() => {})
     }
   },
 })

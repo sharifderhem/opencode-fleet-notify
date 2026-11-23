@@ -4,8 +4,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises"
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
-// keep in sync with package.json
-const VERSION = "0.5.0"
+import { health, VERSION } from "./health.js"
 const SERVICE = "fleet-notify"
 const POLL_INTERVAL_MS = 90_000
 const POLL_JITTER = 0.2
@@ -271,6 +270,7 @@ export const FleetNotify: Plugin = async ({ client }, options) => {
 
   const resolved = await resolveFleetUrl(options)
   if (!resolved) {
+    health.set("notifications", "skipped:no fleet server found (set options.url / FLEET_NOTIFY_URL, fleet-notify.json, or /.well-known/fleet-notify)")
     await log(
       "debug",
       `disabled: no fleet server found (set FLEET_NOTIFY_URL, create ${CONFIG_FILE}, or serve /.well-known/fleet-notify on the gateway origin)`,
@@ -283,6 +283,7 @@ export const FleetNotify: Plugin = async ({ client }, options) => {
 
   const apiKey = await resolveApiKey()
   if (!apiKey) {
+    health.set("notifications", "skipped:no apiKey found (auth.json, provider options, or FLEET_NOTIFY_API_KEY)")
     await log("debug", "disabled: no API key found in auth.json, opencode.json providers, or FLEET_NOTIFY_API_KEY")
     return {}
   }
@@ -494,6 +495,8 @@ export const FleetNotify: Plugin = async ({ client }, options) => {
     }
   }
 
+  health.addSecret(apiKey)
+  health.set("notifications", "ok")
   await log("info", `fleet-notify ${VERSION} active, polling ${base}`)
 
   // Poll once at plugin load (OpenCode start) — session.created does not fire

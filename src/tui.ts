@@ -55,11 +55,22 @@ const definition = Plugin.define({
         },
       }],
     }))
+    let noticeShown = false
+    const showUpdateNotice = async () => {
+      if (noticeShown || typeof (fleet as { notice?: unknown }).notice !== "function") return
+      try {
+        const text = await (fleet as unknown as { notice: (i: null, o: unknown) => Promise<string | null> }).notice(null, options())
+        if (!text) return
+        noticeShown = true
+        ctx.ui.toast.show({ title: "Fleet notify update", message: text, variant: "warning", duration: 30_000 })
+      } catch { /* Older server half or not ready. */ }
+    }
     const tick = async () => {
       if (busy || controller.signal.aborted) return
       busy = true
       try {
         const raw = await fleet.list(null, options())
+        void showUpdateNotice()
         const seen = new Set(Array.isArray(raw) ? raw.filter((x) => x?.seen === true).map((x) => x.id) : [])
         const pending = notices(raw).filter((n) => active(n) && (n.requires_ack || !seen.has(n.id)))
           .filter((n) => !lastShown.has(n.id) || (n.requires_ack && Date.now() - lastShown.get(n.id)! >= 90_000))

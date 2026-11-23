@@ -7,6 +7,7 @@ export const Fleet = Rpc.define({
   methods: {
     list: { input: { type: "null" }, output: { type: "array", items: { type: "object" } } },
     seen: { input: id, output: { type: "null" } },
+    notice: { input: { type: "null" }, output: { type: ["string", "null"] } },
     acknowledge: { input: id, output: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } },
   },
   events: {},
